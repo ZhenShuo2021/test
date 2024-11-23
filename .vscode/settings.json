@@ -1,0 +1,27 @@
+{
+    "cSpell.words": [
+        "baha",
+        "bahamut",
+        "isort",
+        "rbox",
+        "uids"
+    ],
+    "ruff.lineLength": 100,
+    "ruff.format.args": [
+        "--line-length=100"
+    ],
+    "cSpell.ignorePaths": [
+        "黑單*",
+        "package-lock.json",
+        "node_modules",
+        "vscode-extension",
+        ".git/{info,lfs,logs,refs,objects}/**",
+        ".git/{index,*refs,*HEAD}",
+        ".vscode",
+        ".vscode-insiders",
+        "pyproject.toml",
+        "uv.lock",
+        "cookies.txt",
+        ".gitignore"
+    ],
+}

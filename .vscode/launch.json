@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Main File",
+            "type": "debugpy",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                // "--username",
+            ]
+        }
+    ]
+}

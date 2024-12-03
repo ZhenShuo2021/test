@@ -9,13 +9,14 @@ import requests
 from bs4 import BeautifulSoup
 
 from .constant import (
+    FRIEND_NUM,
     MAX_SLEEP,
     MIN_DAY,
     MIN_SLEEP,
     MIN_VISIT,
     USER_AGENT,
 )
-from .utils import load_users, parse_arguments, to_unicode, write_users
+from .utils import get_default_user_info, load_users, parse_arguments, to_unicode, write_users
 
 
 @dataclass
@@ -28,11 +29,18 @@ class GamerAPI:
     """基本API類別, 用於添加用戶(添加黑名單、好友等)以及匯出用戶列表(黑名單列表)"""
 
     def __init__(self, username: str, cookie_path: str) -> None:
+        """
+        Args:
+            username (str): 使用者的帳號名稱
+            cookie_path (str): cookie 檔案路徑
+        """
         self.username = username
         self.cookie_jar = cookiejar.MozillaCookieJar(cookie_path)
         self.cookie_jar.load()
         self.session = requests.Session()
-        self.session.cookies.update({cookie.name: cookie.value for cookie in self.cookie_jar})
+        self.session.cookies.update({
+            cookie.name: cookie.value for cookie in self.cookie_jar if cookie.value
+        })
         self.base_url = "https://home.gamer.com.tw/"
         self.api_url = "https://api.gamer.com.tw/user/v1/friend_add.php"
         self.headers = {
@@ -63,7 +71,12 @@ class GamerAPI:
         print(f"用戶 {uid} 新增結果: {result}")
         return result
 
-    def add_users(self, uids: list[str], category: str = "bad") -> dict[str, Any]:
+    def add_users(
+        self,
+        uids: list[str],
+        existing_users: list[str],
+        category: str = "bad",
+    ) -> dict[str, Any]:
         """
         從列表新增用戶, 跳過已經在用戶列表(黑名單)中的用戶
 
@@ -77,11 +90,6 @@ class GamerAPI:
         """
         results = {}
         consecutive_errors = 0
-
-        existing_users = set()
-        if self.username:
-            if category == "bad":
-                existing_users = set(self.export_users(self.username, t=5))
 
         for uid in uids:
             if uid in existing_users:
@@ -103,16 +111,16 @@ class GamerAPI:
             time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
         return results
 
-    def export_users(self, username: str, t=5) -> list[str]:
+    def export_users(self, username: str, type_id=5) -> list[str]:
         """
-        解析黑名單列表
+        讀取黑名單列表
         Args:
             username: 你的帳號名稱
-            t: 頁面類型, 預設 5 是黑名單頁面
+            type_id: 頁面類型id, 預設 5 是黑名單頁面
         Returns:
             blacklisted_uids: 黑名單用戶ID列表
         """
-        url = f"https://home.gamer.com.tw/friendList.php?user={username}&t={t}"
+        url = f"https://home.gamer.com.tw/friendList.php?user={username}&t={type_id}"
         try:
             response = self.session.get(url, headers=self.headers)
             if response.status_code != 200:
@@ -137,7 +145,7 @@ class GamerAPI:
             raise Exception(f"連接失敗, 狀態碼: {response.status_code}")
         self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
         if not self.csrf_token:
-            raise Exception("找不到 ckBahamutCsrfToken")
+            raise Exception("找不到 ckBahamutCsrfToken, 請更新 cookies 文件")
         self.headers["x-bahamut-csrf-token"] = self.csrf_token
 
 
@@ -216,7 +224,6 @@ class GamerAPIExtended(GamerAPI):
     def batch_auto_remove_user(
         self,
         uids: list[str],
-        t: int = 5,
         min_visits: int = 50,
         min_days: int = 60,
     ) -> None:
@@ -224,7 +231,7 @@ class GamerAPIExtended(GamerAPI):
             self.auto_remove_user(uid, min_visits, min_days)
             time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
 
-    def _get_user_info(self, uid: str) -> UserInfo:
+    def _get_user_info(self, uid: str) -> UserInfo | None:
         """
         取得用戶資訊, 用於自動刪除用戶
         Returns: UserInfo 對象或 None
@@ -243,6 +250,8 @@ class GamerAPIExtended(GamerAPI):
                 visit_count, login_date = self._get_user_info_old(uid, info_list)
             else:  # 新版面
                 visit_count, login_date = self._get_user_info_api(uid)
+                if not visit_count or not login_date:
+                    visit_count, login_date = get_default_user_info()
 
             return UserInfo(visit_count=visit_count, last_login=login_date)
 
@@ -250,9 +259,9 @@ class GamerAPIExtended(GamerAPI):
             print(f"獲取用戶資訊時發生錯誤: {e}")
             return None
 
-    def _get_user_info_old(self, userid: str, info_list) -> tuple[Any | int, Any | datetime]:
+    def _get_user_info_old(self, userid: str, info_list) -> tuple[int, datetime]:
         # 舊版頁面, 範例 https://home.gamer.com.tw/homeindex.php?owner=win920424
-        login_date, visit_count = datetime.now(), MIN_VISIT + 1  # 預設不刪除
+        visit_count, login_date = get_default_user_info()
         for li in info_list.find_all("li"):
             text = li.text.strip()
             if "上站次數" in text:
@@ -265,7 +274,7 @@ class GamerAPIExtended(GamerAPI):
     def _get_user_info_api(
         self,
         userid: str,
-    ) -> tuple[int | None, datetime | None] | tuple[None, None]:
+    ) -> tuple[int, datetime] | tuple[None, None]:
         # 新版頁面, 範例 https://home.gamer.com.tw/profile/index.php?&owner=alele1680
         url = f"https://api.gamer.com.tw/home/v1/block_list.php?userid={userid}"
         login_date, visit_count = datetime.now(), MIN_VISIT + 1  # 預設不刪除
@@ -323,34 +332,42 @@ class GamerAPIExtended(GamerAPI):
 
 
 def main(args) -> None:
+    if args.username == "your user name here":
+        raise ValueError("帳號錯誤，請使用 --username 設定帳號名稱或到 constant.py 修改預設值")
+
     cookie_path = args.cookie_path
     source_path = args.source_path
     output_path = args.output_path
     username = args.username
     api = GamerAPIExtended(username, cookie_path)
 
+    if "export" in args.mode:
+        print("開始匯出黑名單...")
+        existing_users = api.export_users(username)
+        print(f"黑名單匯出成功, 總共匯出 {len(existing_users)} 個名單")
+        write_users(output_path, existing_users)
+        print("黑名單匯出結束\n")
+    else:
+        existing_users = api.export_users(username)
+
+    time.sleep(MIN_SLEEP)
+
     if "update" in args.mode:
         print("開始更新黑名單...")
         uids = load_users(source_path)
         if uids:
-            api.add_users(uids, category="bad")
+            api.add_users(uids, existing_users, category="bad")
         else:
             print("黑名單來源載入失敗")
         print("黑名單更新結束\n")
 
     if "clean" in args.mode:
         print("開始清理黑名單...")
-        if "export" not in args.mode:
-            uids = api.export_users(username)
-        api.batch_auto_remove_user(uids, min_visits=MIN_VISIT, min_days=MIN_DAY)
-        print("黑名單匯出結束\n")
-
-    if "export" in args.mode:
-        print("開始匯出黑名單...")
-        uids = api.export_users(username)
-        print(f"黑名單匯出成功, 總共匯出 {len(uids)} 個名單")
-        write_users(output_path, uids)
-        print("黑名單匯出結束\n")
+        if args.force_clean or len(existing_users) > FRIEND_NUM:
+            api.batch_auto_remove_user(existing_users, min_visits=MIN_VISIT, min_days=MIN_DAY)
+        else:
+            print(f"你的黑名單數量未超過 {FRIEND_NUM} 人, 跳過自動清理功能")
+        print("黑名單清理結束\n")
 
 
 if __name__ == "__main__":

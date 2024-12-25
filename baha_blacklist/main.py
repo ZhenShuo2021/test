@@ -1,3 +1,4 @@
+import sys
 import time
 import random
 import http.cookiejar as cookiejar
@@ -43,10 +44,7 @@ class GamerAPI:
         })
         self.base_url = "https://home.gamer.com.tw/"
         self.api_url = "https://api.gamer.com.tw/user/v1/friend_add.php"
-        self.headers = {
-            "User-Agent": USER_AGENT,
-            "Referer": "https://www.gamer.com.tw/",
-        }
+        self.headers = {"User-Agent": USER_AGENT, "Referer": "https://www.gamer.com.tw/"}
         self.csrf_token = None
 
     def add_user(self, uid: str, category="bad") -> str | None:
@@ -139,6 +137,12 @@ class GamerAPI:
             print(f"擷取黑名單列表失敗: {e}")
             return []
 
+    def check_login(self) -> bool:
+        """檢查是否成功登入, 被 redirect 代表登入失敗, 回傳 False"""
+        url = "https://home.gamer.com.tw/setting/"
+        response = self.session.get(url, headers=self.headers)
+        return not response.history or not (300 <= response.history[0].status_code < 400)
+
     def _update_csrf(self) -> None:
         response = self.session.get(self.base_url, headers=self.headers)
         if response.status_code != 200:
@@ -154,10 +158,8 @@ class GamerAPIExtended(GamerAPI):
 
     def __init__(self, username, cookie_path: str) -> None:
         super().__init__(username, cookie_path)
-        self.user_info_time = "上站次數"
-        self.user_info_login = "上站日期"
-        self.user_info_time = to_unicode(self.user_info_time)
-        self.user_info_login = to_unicode(self.user_info_login)
+        self.user_info_time = to_unicode("上站次數")
+        self.user_info_login = to_unicode("上站日期")
 
     def remove_user(self, uid: str) -> str:
         """發送 POST 請求刪除用戶 (移除黑名單)"""
@@ -340,6 +342,10 @@ def main(args) -> None:
     output_path = args.output_path
     username = args.username
     api = GamerAPIExtended(username, cookie_path)
+
+    if not api.check_login():
+        print("登入失敗，請更新 Cookies")
+        sys.exit(0)
 
     if "export" in args.mode:
         print("開始匯出黑名單...")

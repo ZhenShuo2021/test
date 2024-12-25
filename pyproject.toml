@@ -23,6 +23,8 @@ dev-dependencies = [
     "mypy >= 1.13.0",
     "pre-commit >= 4.0.0",
     "isort >= 5.13.2",
+    "ipykernel>=6.29.5",
+    "pyperclip>=1.9.0",
 ]
 
 [tool.ruff]

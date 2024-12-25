@@ -1,0 +1,45 @@
+name: update-blacklist
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+jobs:
+  update-blacklist:
+    runs-on: ubuntu-latest
+    environment: update-blacklist
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: 3.13
+
+      - name: Run Python script
+        env:
+          COOKIES_BASE64: ${{ secrets.COOKIES_BASE64 }}
+          BAHA_USERNAME: ${{ secrets.BAHA_USERNAME }}
+        run: uv run -m baha_blacklist.actions
+
+      - name: Commit and push changes
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .
+            git ls-files | grep -i 'cookie' | xargs git reset  # 排除 cookie
+            git commit -m "automated update blacklist" --no-verify
+            git push
+          else
+            echo "No changes to commit"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

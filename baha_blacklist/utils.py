@@ -1,4 +1,5 @@
 import os
+import base64
 import argparse
 from datetime import datetime
 from typing import Literal
@@ -36,6 +37,16 @@ def get_default_user_info() -> tuple[Literal[51], datetime]:
     """獲取user_info失敗時的預設數值, 預設數值被設定為不會修改好友名單"""
     login_date, visit_count = datetime.now(), MIN_VISIT + 1
     return visit_count, login_date
+
+
+def base64_encode(data: str) -> str:
+    """編碼成base64格式"""
+    return base64.b64encode(data.encode("utf-8")).decode("utf-8")
+
+
+def base64_decode(encoded_data: str) -> str:
+    """解碼回字串"""
+    return base64.b64decode(encoded_data.encode("utf-8")).decode("utf-8")
 
 
 class CustomHelpFormatter(argparse.RawTextHelpFormatter):

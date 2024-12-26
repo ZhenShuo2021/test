@@ -1,4 +1,4 @@
-# Github Action 用，獲取 base64 編碼的 cookies
+# 用於生成 Github Action 需要的 base64 編碼的 cookies
 import pyperclip
 
 from baha_blacklist.actions import cookies_to_base64

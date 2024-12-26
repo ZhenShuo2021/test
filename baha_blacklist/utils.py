@@ -1,18 +1,16 @@
-import os
-import base64
 import argparse
+import base64
+import os
 from datetime import datetime
-from typing import Literal
+from typing import Any
 
-import requests
-
-from .constant import BLACKLIST_DEST, BLACKLIST_SRC, COOKIE_PATH, MIN_VISIT, USERNAME
+from curl_cffi.requests import Session
 
 
-def load_users(source: str) -> list[str]:
+def load_users(source: str, session: Session) -> list[str]:
     """從黑名單列表中讀取用戶，來源可以是網路或者文件檔案"""
     if source.startswith(("http://", "https://")):
-        response = requests.get(source)
+        response = session.get(source)
         response.raise_for_status()
         return [line.rstrip("\n") for line in response.text.splitlines()]
     else:
@@ -33,9 +31,9 @@ def to_unicode(string: str) -> str:
     return string.encode(encoding="UTF-8").decode()
 
 
-def get_default_user_info() -> tuple[Literal[51], datetime]:
+def get_default_user_info(min_visit: int) -> tuple[int, datetime]:
     """獲取user_info失敗時的預設數值, 預設數值被設定為不會修改好友名單"""
-    login_date, visit_count = datetime.now(), MIN_VISIT + 1
+    login_date, visit_count = datetime.now(), min_visit + 1
     return visit_count, login_date
 
 
@@ -50,8 +48,26 @@ def base64_decode(encoded_data: str) -> str:
 
 
 class CustomHelpFormatter(argparse.RawTextHelpFormatter):
-    def __init__(self, prog) -> None:
+    def __init__(self, prog: Any) -> None:
         super().__init__(prog, max_help_position=36)
+
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        if not action.option_strings:
+            (metavar,) = self._metavar_formatter(action, action.dest)(1)
+            return metavar
+        else:
+            parts: list[str] = []
+            if action.nargs == 0:
+                parts.extend(action.option_strings)
+
+            else:
+                default = action.dest.upper()
+                args_string = self._format_args(action, default)
+                for option_string in action.option_strings:
+                    # parts.append('%s %s' % (option_string, args_string))
+                    parts.append(f"{option_string}")
+                parts[-1] += f" {args_string}"
+            return ", ".join(parts)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -59,13 +75,20 @@ def parse_arguments() -> argparse.Namespace:
         description="巴哈黑名單工具",
         formatter_class=CustomHelpFormatter,
     )
-    parser.add_argument("--username", type=str, default=USERNAME, help="帳號名稱")
-    parser.add_argument("--cookie-path", type=str, default=COOKIE_PATH, help="cookie檔案路徑")
-    parser.add_argument("--source-path", type=str, default=BLACKLIST_SRC, help="黑名單來源檔案路徑")
+    parser.add_argument("-u", "--username", dest="username", type=str, help="帳號名稱")
+    parser.add_argument("-c", "--cookie-path", dest="cookie_path", type=str, help="cookie檔案路徑")
     parser.add_argument(
-        "--output-path",
+        "-s",
+        "--source-path",
+        dest="blacklist_src",
         type=str,
-        default=BLACKLIST_DEST,
+        help="黑名單來源檔案路徑",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-path",
+        dest="blacklist_dest",
+        type=str,
         help="匯出黑名單的檔案路徑",
     )
     parser.add_argument(
@@ -79,6 +102,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--force-clean",
         action="store_true",
+        dest="force_clean",
         help="強制清理黑名單列表，預設黑名單數量超過 1000 人才會自動清理",
     )
 

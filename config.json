@@ -1,0 +1,12 @@
+{
+    "username": "your user name here",
+    "cookie_path": "./cookies.txt",
+    "blacklist_dest": "./blacklist.txt",
+    "blacklist_src": "https://github.com/ZhenShuo2021/baha-blacklist/raw/refs/heads/main/blacklist.txt",
+    "min_sleep": 1.0,
+    "max_sleep": 3.5,
+    "min_visit": 10,
+    "min_day": 360,
+    "friend_num": 1000,
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+}

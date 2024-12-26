@@ -1,27 +1,28 @@
+import http.cookiejar as cookiejar
+import logging
+import random
 import sys
 import time
-import random
-import http.cookiejar as cookiejar
+from argparse import Namespace
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-import requests
-from bs4 import BeautifulSoup
+from curl_cffi import requests
+from curl_cffi.requests.exceptions import RequestException
+from lxml import html
 
-from .constant import (
-    FRIEND_NUM,
-    MAX_SLEEP,
-    MIN_DAY,
-    MIN_SLEEP,
-    MIN_VISIT,
-    USER_AGENT,
-)
+from .config import Config, ConfigLoader
+from .logger import setup_logging
 from .utils import get_default_user_info, load_users, parse_arguments, to_unicode, write_users
+
+logger = logging.getLogger("baha_blacklist")
 
 
 @dataclass
 class UserInfo:
+    uid: str  # 用戶名稱
     visit_count: int
     last_login: datetime
 
@@ -29,25 +30,21 @@ class UserInfo:
 class GamerAPI:
     """基本API類別, 用於添加用戶(添加黑名單、好友等)以及匯出用戶列表(黑名單列表)"""
 
-    def __init__(self, username: str, cookie_path: str) -> None:
-        """
-        Args:
-            username (str): 使用者的帳號名稱
-            cookie_path (str): cookie 檔案路徑
-        """
-        self.username = username
-        self.cookie_jar = cookiejar.MozillaCookieJar(cookie_path)
-        self.cookie_jar.load()
-        self.session = requests.Session()
+    def __init__(self, config: Config) -> None:
+        self.logger = logger
+        self.config = config
+        cookie_jar = cookiejar.MozillaCookieJar(config.cookie_path)
+        cookie_jar.load()
+        self.session = requests.Session(impersonate="chrome131")
         self.session.cookies.update({
-            cookie.name: cookie.value for cookie in self.cookie_jar if cookie.value
+            cookie.name: cookie.value for cookie in cookie_jar if cookie.value
         })
         self.base_url = "https://home.gamer.com.tw/"
         self.api_url = "https://api.gamer.com.tw/user/v1/friend_add.php"
-        self.headers = {"User-Agent": USER_AGENT, "Referer": "https://www.gamer.com.tw/"}
+        self.headers = {"User-Agent": config.user_agent, "Referer": "https://www.gamer.com.tw/"}
         self.csrf_token = None
 
-    def add_user(self, uid: str, category="bad") -> str | None:
+    def add_user(self, uid: str, category: str = "bad") -> str:
         """
         Args:
             uid: The user ID
@@ -62,11 +59,11 @@ class GamerAPI:
             if response.status_code == 200:
                 result = response.json()
             else:
-                return f"請求失敗, 狀態碼: {response.status_code}"
+                return f"錯誤: 請求失敗, 狀態碼: {response.status_code}"
         except Exception as e:
             result = f"用戶關係操作錯誤: {e}"
 
-        print(f"用戶 {uid} 新增結果: {result}")
+        self.logger.info(f"用戶 {uid} 新增結果: {result}")
         return result
 
     def add_users(
@@ -86,12 +83,12 @@ class GamerAPI:
         Returns:
             Dict[str, Any]: 每個用戶ID對應的操作結果
         """
-        results = {}
+        results: dict[str, str] = {}
         consecutive_errors = 0
 
         for uid in uids:
             if uid in existing_users:
-                print(f"用戶 {uid} 已在列表中, 跳過")
+                self.logger.info(f"用戶 {uid} 已在列表中, 跳過")
                 results[uid] = "已在列表中"
                 continue
 
@@ -101,63 +98,62 @@ class GamerAPI:
             result = self.add_user(uid, category)
             results[uid] = result
 
-            if isinstance(result, str):
+            if "錯誤" in result:
                 consecutive_errors += 1
             else:
                 consecutive_errors = 0
 
-            time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
+            time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
         return results
 
-    def export_users(self, username: str, type_id=5) -> list[str]:
+    def export_users(self, type_id: int = 5) -> list[str]:
         """
         讀取黑名單列表
         Args:
-            username: 你的帳號名稱
             type_id: 頁面類型id, 預設 5 是黑名單頁面
         Returns:
             blacklisted_uids: 黑名單用戶ID列表
         """
-        url = f"https://home.gamer.com.tw/friendList.php?user={username}&t={type_id}"
+        url = f"https://home.gamer.com.tw/friendList.php?user={self.config.username}&t={type_id}"
         try:
             response = self.session.get(url, headers=self.headers)
             if response.status_code != 200:
-                print(f"無法獲取頁面, 狀態碼: {response.status_code}")
+                self.logger.error(f"無法獲取頁面, 狀態碼: {response.status_code}")
                 return []
 
-            soup = BeautifulSoup(response.text, "html.parser")
-            user_ids = [div.get("data-origin") for div in soup.find_all("div", class_="user_id")]
+            tree = html.fromstring(response.text)
+            user_ids = tree.xpath("//div[@class='user_id']/@data-origin")
 
             if not user_ids:
-                print("未找到任何黑名單ID")
+                self.logger.info("未找到任何黑名單ID")
                 return []
 
             return user_ids
         except Exception as e:
-            print(f"擷取黑名單列表失敗: {e}")
+            self.logger.error(f"擷取黑名單列表失敗: {e}")
             return []
 
-    def check_login(self) -> bool:
+    def login_success(self) -> bool:
         """檢查是否成功登入, 被 redirect 代表登入失敗, 回傳 False"""
         url = "https://home.gamer.com.tw/setting/"
         response = self.session.get(url, headers=self.headers)
-        return not response.history or not (300 <= response.history[0].status_code < 400)
+        return response.redirect_count == 0
 
     def _update_csrf(self) -> None:
         response = self.session.get(self.base_url, headers=self.headers)
         if response.status_code != 200:
             raise Exception(f"連接失敗, 狀態碼: {response.status_code}")
         self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
-        if not self.csrf_token:
+        if self.csrf_token is None:
             raise Exception("找不到 ckBahamutCsrfToken, 請更新 cookies 文件")
-        self.headers["x-bahamut-csrf-token"] = self.csrf_token
+        self.headers["x-bahamut-csrf-token"] = self.csrf_token  # type: ignore
 
 
 class GamerAPIExtended(GamerAPI):
     """專責處理 https://home.gamer.com.tw/friendList.php?user=用戶名稱&t=5 的 API"""
 
-    def __init__(self, username, cookie_path: str) -> None:
-        super().__init__(username, cookie_path)
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
         self.user_info_time = to_unicode("上站次數")
         self.user_info_login = to_unicode("上站日期")
 
@@ -187,7 +183,7 @@ class GamerAPIExtended(GamerAPI):
         for uid in uids:
             result = self.remove_user(uid)
             results[uid] = result
-            time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
+            time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
         return results
 
     def auto_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> None:
@@ -199,10 +195,8 @@ class GamerAPIExtended(GamerAPI):
             min_days: 最近登入天數最小容許值
         """
         try:
-            user_info = self._get_user_info(uid)
-            if user_info is None:
-                print(f"無法獲取用戶 {uid} 的資訊")
-                return
+            user_info = self.get_user_info(uid)
+            self.logger.debug(f"擷取用戶資訊: {user_info}")
 
             last_login = (datetime.now() - user_info.last_login).days
 
@@ -214,14 +208,14 @@ class GamerAPIExtended(GamerAPI):
 
             if reason:
                 msg = self.remove_user(uid)
-                print(f"用戶移除 {uid}: {', '.join(reason)}, 移除結果: {msg}")
+                self.logger.info(f"用戶移除 {uid}: {', '.join(reason)}, 移除結果: {msg}")
             else:
-                print(
+                self.logger.info(
                     f"用戶保留 {uid} (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})",
                 )
 
         except Exception as e:
-            print(f"處理用戶 {uid} 時發生錯誤: {e}")
+            self.logger.error(f"處理用戶 {uid} 時發生錯誤: {e}")
 
     def batch_auto_remove_user(
         self,
@@ -231,55 +225,14 @@ class GamerAPIExtended(GamerAPI):
     ) -> None:
         for uid in uids:
             self.auto_remove_user(uid, min_visits, min_days)
-            time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
+            time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-    def _get_user_info(self, uid: str) -> UserInfo | None:
+    def get_user_info(self, uid: str) -> UserInfo:
         """
         取得用戶資訊, 用於自動刪除用戶
         Returns: UserInfo 對象或 None
         """
-        url = f"https://home.gamer.com.tw/homeindex.php?owner={uid}"
-        try:
-            response = self.session.get(url, headers=self.headers, allow_redirects=True)
-            if response.status_code != 200:
-                print(f"取得用戶頁面失敗, 狀態碼: {response.status_code}")
-                return None
-
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            info_list = soup.select_one(".BH-rbox.BH-list1 ul")
-            if info_list:  # 舊版面
-                visit_count, login_date = self._get_user_info_old(uid, info_list)
-            else:  # 新版面
-                visit_count, login_date = self._get_user_info_api(uid)
-                if not visit_count or not login_date:
-                    visit_count, login_date = get_default_user_info()
-
-            return UserInfo(visit_count=visit_count, last_login=login_date)
-
-        except Exception as e:
-            print(f"獲取用戶資訊時發生錯誤: {e}")
-            return None
-
-    def _get_user_info_old(self, userid: str, info_list) -> tuple[int, datetime]:
-        # 舊版頁面, 範例 https://home.gamer.com.tw/homeindex.php?owner=win920424
-        visit_count, login_date = get_default_user_info()
-        for li in info_list.find_all("li"):
-            text = li.text.strip()
-            if "上站次數" in text:
-                visit_count = int(text.split("：")[1])
-            if "上站日期" in text:
-                login_date = datetime.strptime(text.split("：")[1], "%Y-%m-%d")
-
-        return visit_count, login_date
-
-    def _get_user_info_api(
-        self,
-        userid: str,
-    ) -> tuple[int, datetime] | tuple[None, None]:
-        # 新版頁面, 範例 https://home.gamer.com.tw/profile/index.php?&owner=alele1680
-        url = f"https://api.gamer.com.tw/home/v1/block_list.php?userid={userid}"
-        login_date, visit_count = datetime.now(), MIN_VISIT + 1  # 預設不刪除
+        url = f"https://api.gamer.com.tw/home/v1/block_list.php?userid={uid}"
 
         try:
             response = self.session.get(url, headers=self.headers)
@@ -298,14 +251,17 @@ class GamerAPIExtended(GamerAPI):
                         elif name == self.user_info_login:  # 上站日期（上次登入日期）
                             login_date = datetime.strptime(value, "%Y-%m-%d")
 
-            return visit_count, login_date
+            return UserInfo(uid=uid, visit_count=visit_count, last_login=login_date)
 
-        except requests.RequestException as e:
-            print(f"HTTP 請求失敗: {e}")
+        except RequestException as e:
+            self.logger.error(f"HTTP 請求失敗: {e}")
+        except (ValueError, KeyError, TypeError) as e:
+            self.logger.error(f"資料處理失敗: {e}")
         except Exception as e:
-            print(f"資料處理失敗: {e}")
+            self.logger.error(f"獲取用戶資訊時發生錯誤: {e}")
 
-        return None, None
+        visit_count, login_date = get_default_user_info(self.config.min_visit)
+        return UserInfo(uid=uid, visit_count=visit_count, last_login=login_date)
 
     def _get_friendList_csrf(self) -> str:
         """取得 friendList.php 專用的 CSRF Token
@@ -333,47 +289,51 @@ class GamerAPIExtended(GamerAPI):
         return csrf_token
 
 
-def main(args) -> None:
+def main(args: Namespace, config_name: str = "config.json") -> None:
     if args.username == "your user name here":
-        raise ValueError("帳號錯誤，請使用 --username 設定帳號名稱或到 constant.py 修改預設值")
+        raise ValueError("帳號錯誤，請使用 -u 參數設定帳號名稱或到 config.json 修改預設值")
 
-    cookie_path = args.cookie_path
-    source_path = args.source_path
-    output_path = args.output_path
-    username = args.username
-    api = GamerAPIExtended(username, cookie_path)
+    setup_logging(logging.INFO)
+    json_path = str(Path(__file__).parents[1] / config_name)
+    config_loader = ConfigLoader(Config())
+    config = config_loader.load_config(json_path, args)
+    blacklist_src = config.blacklist_src
+    blacklist_dest = config.blacklist_dest
+    api = GamerAPIExtended(config)
 
-    if not api.check_login():
-        print("登入失敗，請更新 Cookies")
+    if not api.login_success():
+        logger.error("登入失敗，請更新 Cookies")
         sys.exit(0)
 
     if "export" in args.mode:
-        print("開始匯出黑名單...")
-        existing_users = api.export_users(username)
-        print(f"黑名單匯出成功, 總共匯出 {len(existing_users)} 個名單")
-        write_users(output_path, existing_users)
-        print("黑名單匯出結束\n")
+        logger.info("開始匯出黑名單...")
+        existing_users = api.export_users()
+        logger.info(f"黑名單匯出成功, 總共匯出 {len(existing_users)} 個名單")
+        write_users(blacklist_dest, existing_users)
+        logger.info("黑名單匯出結束\n")
     else:
-        existing_users = api.export_users(username)
+        existing_users = api.export_users()
 
-    time.sleep(MIN_SLEEP)
+    time.sleep(config.min_sleep)
 
     if "update" in args.mode:
-        print("開始更新黑名單...")
-        uids = load_users(source_path)
+        logger.info("開始更新黑名單...")
+        uids = load_users(blacklist_src, api.session)
         if uids:
             api.add_users(uids, existing_users, category="bad")
         else:
-            print("黑名單來源載入失敗")
-        print("黑名單更新結束\n")
+            logger.error("黑名單來源載入失敗")
+        logger.info("黑名單更新結束\n")
 
     if "clean" in args.mode:
-        print("開始清理黑名單...")
-        if args.force_clean or len(existing_users) > FRIEND_NUM:
-            api.batch_auto_remove_user(existing_users, min_visits=MIN_VISIT, min_days=MIN_DAY)
+        logger.info("開始清理黑名單...")
+        if args.force_clean or len(existing_users) > config.friend_num:
+            api.batch_auto_remove_user(
+                existing_users, min_visits=config.min_visit, min_days=config.min_day
+            )
         else:
-            print(f"你的黑名單數量未超過 {FRIEND_NUM} 人, 跳過自動清理功能")
-        print("黑名單清理結束\n")
+            logger.info(f"黑名單數量未超過 {config.friend_num} 人, 跳過自動清理功能")
+        logger.info("黑名單清理結束\n")
 
 
 if __name__ == "__main__":

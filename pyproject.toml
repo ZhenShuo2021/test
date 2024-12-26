@@ -12,20 +12,46 @@ description = "巴哈姆特黑名單工具"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "beautifulsoup4>=4.12.3",
-    "requests>=2.32.3",
+    "colorama>=0.4.6",
+    "curl-cffi>=0.8.0b7",
+    "lxml>=5.3.0",
 ]
 
 
 [tool.uv]
 dev-dependencies = [
     "ruff >= 0.7.1",
-    "mypy >= 1.13.0",
+    "mypy>=1.13.0",
     "pre-commit >= 4.0.0",
     "isort >= 5.13.2",
     "ipykernel>=6.29.5",
     "pyperclip>=1.9.0",
 ]
+
+
+[tool.mypy]
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_ignores = true
+follow_imports = "silent"
+disable_error_code = [
+    "import-untyped",
+    "import-not-found",
+    "no-untyped-call",
+    "no-any-return",
+    "unused-ignore",
+]
+enable_error_code = ["attr-defined", "name-defined"]
+# enable_error_code = [
+#   "ignore-without-code",
+#   "redundant-expr",
+#   "truthy-bool",
+# ]
+
 
 [tool.ruff]
 line-length = 100
@@ -37,11 +63,16 @@ target-version = "py310"
 docstring-code-format = true
 quote-style = "double"
 
+[tool.ruff.lint.per-file-ignores]
+"v2dl/cli/account_cli.py" = ["T201"]
+"v2dl/utils/security.py" = ["T201"]
+
 [tool.ruff.lint]
 explicit-preview-rules = true
 allowed-confusables = ["，", "。", "（", "）"]
 ignore = [
-    "T201",    # flake8-print
+    "COM812",  # flake8-commas "Trailing comma missing"
+    "ISC001",  # flake8-single-line-implicit-string-concatenation
     "E402",    # module-import-not-at-top-of-file
     "E501",    # line-too-long
     "E731",    # lambda-assignment
@@ -110,5 +141,8 @@ select = [
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-length-sort-straight = true
+length-sort-straight = false
 relative-imports-order = "closest-to-furthest"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

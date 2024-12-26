@@ -1,5 +1,4 @@
-# entry script
-from baha_blacklist import main
+from baha_blacklist import main, utils
 
-args = main.parse_arguments()
-main.main(args)
+args = utils.parse_arguments()
+raise SystemExit(main.main(args))

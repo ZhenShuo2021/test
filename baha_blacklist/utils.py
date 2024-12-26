@@ -106,4 +106,8 @@ def parse_arguments() -> argparse.Namespace:
         help="強制清理黑名單列表，預設黑名單數量超過 1000 人才會自動清理",
     )
 
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument("-q", "--quiet", action="store_true", help="安靜模式")
+    log_group.add_argument("-v", "--verbose", action="store_true", help="偵錯模式")
+
     return parser.parse_args()

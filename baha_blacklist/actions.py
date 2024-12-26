@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 
-from .config import Config
+from .config import Config, ConfigLoader
 from .main import GamerAPIExtended
 from .utils import base64_decode, base64_encode, write_users
 
@@ -40,7 +40,9 @@ def decode_cookies_from_base64() -> None:
 
 if __name__ == "__main__":
     decode_cookies_from_base64()
-    config = Config()
+    config_loader = ConfigLoader(Config())
+    config = config_loader.load_config()
+    config.cookie_path = cookie_path
 
     config.username = os.environ["BAHA_USERNAME"]
     api = GamerAPIExtended(config)

@@ -359,9 +359,6 @@ def init_app(args: Namespace, config_name: str = "config.json") -> tuple[Config,
     config_loader = ConfigLoader(Config())
     config = config_loader.load_config(json_path, args)
 
-    if config.username == "your user name here":
-        raise ValueError("帳號錯誤，請使用 -u 參數設定帳號名稱或到 config.json 修改預設值")
-
     api = GamerAPIExtended(config)
     return config, api
 

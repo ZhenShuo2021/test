@@ -7,8 +7,6 @@ from .config import Config, ConfigLoader
 from .main import GamerAPIExtended
 from .utils import base64_decode, base64_encode, write_users
 
-cookie_path = "decoded_cookies.txt"
-
 
 def cookies_to_base64(
     input_file: str = "cookies.txt",
@@ -25,7 +23,7 @@ def cookies_to_base64(
     return cookies_base64
 
 
-def decode_cookies_from_base64() -> None:
+def decode_cookies_from_base64(cookie_path: str) -> None:
     """從 GitHub 環境變數獲取 Base64 編碼的 cookie, 解碼並寫進臨時檔案"""
     cookies_base64 = os.getenv("COOKIES_BASE64")
     if not cookies_base64:
@@ -54,13 +52,13 @@ def simplified_logger(loglevel: int = logging.DEBUG) -> logging.Logger:
 
 
 if __name__ == "__main__":
-    decode_cookies_from_base64()
+    cookie_path = "decoded_cookies.txt"
+    decode_cookies_from_base64(cookie_path)
     logger = simplified_logger()
 
-    config_loader = ConfigLoader(Config())
+    defaults = Config(username=os.environ["BAHA_USERNAME"], cookie_path=cookie_path)
+    config_loader = ConfigLoader(defaults)
     config = config_loader.load_config()
-    config.cookie_path = cookie_path
-    config.username = os.environ["BAHA_USERNAME"]
 
     api = GamerAPIExtended(config)
 

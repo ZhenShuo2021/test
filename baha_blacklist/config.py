@@ -25,8 +25,13 @@ class Config:
     browser: str = "chrome131"
 
     def validate(self) -> None:
+        # 別忘了修改 actions.py
+        if self.username == "your user name here":
+            raise ValueError(
+                "未設定使用者帳號，請使用 -u 參數設定帳號名稱或到 config.json 修改預設值"
+            )
         if self.min_sleep > self.max_sleep:
-            raise ValueError("min_sleep must not be greater than max_sleep.")
+            raise ValueError("min_sleep 必須大於 max_sleep.")
 
 
 class ConfigLoader:
@@ -36,43 +41,39 @@ class ConfigLoader:
     def load_config(
         self,
         json_path: str | None = None,
-        args: dict[str, Any] | Namespace | None = None,
+        args: dict[str, Any] | Namespace = {},
         env_mapping: dict[str, str] | None = None,
     ) -> Config:
-        logger.info("Starting to load configuration.")
+        logger.info("開始載入設定")
         env_mapping = env_mapping or {}
         json_config = self.load_from_json(json_path)
         cli_config = self.load_from_cli(args)
         env_config = self.load_from_env(env_mapping)
         final_config = self.merge_configs(env_config, json_config, cli_config)
         final_config.validate()
-        logger.info("Configuration successfully loaded and validated.")
+        logger.info("設定已成功載入並驗證")
         return final_config
 
     def load_from_json(self, file_path: str | None) -> dict[str, Any]:
         if file_path and os.path.exists(file_path):
-            logger.debug(f"Loading configuration from JSON file: {file_path}")
+            logger.debug(f"開始從 JSON 文件載入設定：{file_path}")
             with open(file_path) as file:
                 try:
                     return json.load(file)
                 except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON format in {file_path}: {e}")
-                    raise ValueError(f"Invalid JSON format in {file_path}: {e}")
-        logger.warning("No JSON configuration file provided or file does not exist.")
+                    logger.error(f"{file_path} 中的 JSON 格式無效：{e}")
+                    raise ValueError(f"{file_path} 中的 JSON 格式無效：{e}")
+        logger.warning("未提供 JSON 設定檔或檔案不存在")
         return {}
 
-    def load_from_cli(self, args: dict[str, Any] | Namespace | None) -> dict[str, Any]:
-        if args is None:
-            logger.info("No CLI arguments provided.")
-            return {}
-
-        logger.debug("Loading configuration from CLI arguments.")
+    def load_from_cli(self, args: dict[str, Any] | Namespace) -> dict[str, Any]:
+        logger.debug("開始從 CLI 參數載入設定")
         if isinstance(args, Namespace):
             args = vars(args)
         return args
 
     def load_from_env(self, env_mapping: dict[str, str]) -> dict[str, Any]:
-        logger.debug("Loading configuration from environment variables.")
+        logger.debug("開始從環境變數載入設定")
         return {
             key: os.getenv(env_var)
             for key, env_var in env_mapping.items()
@@ -80,7 +81,7 @@ class ConfigLoader:
         }
 
     def merge_configs(self, *configs: dict[str, Any]) -> Config:
-        logger.debug("Merging configurations.")
+        logger.debug("開始合併設定")
         merged = asdict(self.defaults)
         for config in configs:
             for key, value in config.items():
@@ -90,10 +91,10 @@ class ConfigLoader:
                     merged[key] = value
                 elif key in merged:
                     logger.error(
-                        f"Type mismatch for key '{key}': Expected {type(merged[key])}, got {type(value)}"
+                        f"key '{key}' 型別錯誤： Expected {type(merged[key])}, got {type(value)}"
                     )
                     raise TypeError(
-                        f"Type mismatch for key '{key}': Expected {type(merged[key])}, got {type(value)}"
+                        f"key '{key}' 型別錯誤： Expected {type(merged[key])}, got {type(value)}"
                     )
-        logger.debug("Configurations merged successfully.")
+        logger.debug("設定已成功合併")
         return Config(**merged)

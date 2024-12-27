@@ -8,7 +8,6 @@ from .main import GamerAPIExtended
 from .utils import base64_decode, base64_encode, write_users
 
 cookie_path = "decoded_cookies.txt"
-logger = logging.getLogger()
 
 
 def cookies_to_base64(
@@ -38,13 +37,31 @@ def decode_cookies_from_base64() -> None:
         f.write(cookies_content)
 
 
+def simplified_logger(loglevel: int = logging.DEBUG) -> logging.Logger:
+    logging.root.setLevel(loglevel)
+    logging.root.handlers.clear()
+
+    logger = logging.getLogger()
+    logger.setLevel(loglevel)
+    logger.handlers.clear()
+
+    formatter = logging.Formatter("[%(levelname)s] %(message)s")
+    handler = logging.StreamHandler()
+    handler.setLevel(loglevel)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+
 if __name__ == "__main__":
     decode_cookies_from_base64()
+    logger = simplified_logger()
+
     config_loader = ConfigLoader(Config())
     config = config_loader.load_config()
     config.cookie_path = cookie_path
-
     config.username = os.environ["BAHA_USERNAME"]
+
     api = GamerAPIExtended(config)
 
     if not api.login_success():

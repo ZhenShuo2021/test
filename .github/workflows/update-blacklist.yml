@@ -26,7 +26,8 @@ jobs:
       - name: Run Python script
         env:
           COOKIES_BASE64: ${{ secrets.COOKIES_BASE64 }}
-          BAHA_USERNAME: ${{ secrets.BAHA_USERNAME }}
+          BAHA_ACCOUNT: ${{ secrets.BAHA_ACCOUNT }}
+          BAHA_PASSWORD: ${{ secrets.BAHA_PASSWORD }}
         run: uv run -m baha_blacklist.actions
 
       - name: Commit and push changes

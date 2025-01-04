@@ -53,17 +53,20 @@ def simplified_logger(loglevel: int = logging.DEBUG) -> logging.Logger:
 
 if __name__ == "__main__":
     cookie_path = "decoded_cookies.txt"
+    account = os.environ["BAHA_ACCOUNT"]
+    password = os.environ["BAHA_PASSWORD"]
+
     decode_cookies_from_base64(cookie_path)
     logger = simplified_logger()
 
-    defaults = Config(username=os.environ["BAHA_USERNAME"], cookie_path=cookie_path)
+    defaults = Config(account=account, password=password, cookie_path=cookie_path)
     config_loader = ConfigLoader(defaults)
     config = config_loader.load_config()
 
     api = GamerAPIExtended(config)
 
-    if not api.login_success():
-        logger.error("登入失敗，請更新 Cookies")
+    if not api.login():
+        logger.error("登入失敗，程式終止")
         sys.exit(0)
 
     logger.info("開始匯出黑名單...")

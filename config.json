@@ -1,5 +1,6 @@
 {
-    "username": "your user name here",
+    "account": "your account here",
+    "password": "",
     "cookie_path": "./cookies.txt",
     "blacklist_dest": "./blacklist.txt",
     "blacklist_src": "https://github.com/ZhenShuo2021/baha-blacklist/raw/refs/heads/main/blacklist.txt",

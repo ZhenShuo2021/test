@@ -75,7 +75,8 @@ def parse_arguments() -> argparse.Namespace:
         description="巴哈黑名單工具",
         formatter_class=CustomHelpFormatter,
     )
-    parser.add_argument("-u", "--username", dest="username", type=str, help="帳號名稱")
+    parser.add_argument("-a", "--account", dest="account", type=str, help="帳戶名稱")
+    parser.add_argument("-p", "--password", dest="password", type=str, help="帳戶密碼")
     parser.add_argument("-c", "--cookie-path", dest="cookie_path", type=str, help="cookie檔案路徑")
     parser.add_argument(
         "-s",

@@ -1,6 +1,8 @@
 import http.cookiejar as cookiejar
 import logging
 import random
+import re
+import sys
 import time
 from argparse import Namespace
 from dataclasses import dataclass
@@ -26,22 +28,99 @@ class UserInfo:
     last_login: datetime
 
 
-class GamerAPI:
-    """基本API類別, 用於添加用戶(添加黑名單、好友等)以及匯出用戶列表"""
+class GamerAPIBasic:
+    "基本登入和建立 Session"
+
+    LOGIN_URL_PHASE1 = "https://user.gamer.com.tw/login.php"
+    LOGIN_URL_PHASE2 = "https://user.gamer.com.tw/ajax/do_login.php"
 
     def __init__(self, config: Config) -> None:
         self.logger = logger
         self.config = config
-        cookie_jar = cookiejar.MozillaCookieJar(config.cookie_path)
+        self.headers = {"User-Agent": config.user_agent}
+        self.session = requests.Session(headers=self.headers, impersonate=self.config.browser)  # type: ignore
+        self.base_url = "https://www.gamer.com.tw/"
+        self.csrf_token = None
+
+    def login(self) -> bool:
+        """包裝登入函式們"""
+
+        self.logger.debug("開始登入...")
+        success = self.password_login(self.config.account, self.config.password)
+        if success:
+            self.logger.debug("密碼登入成功")
+            return success
+        else:
+            self.logger.debug("密碼登入失敗，改用 cookies 登入")
+            time.sleep(1)
+            success = self.cookies_login()
+            if success:
+                self.logger.debug("cookies 登入成功")
+                return success
+            else:
+                self.logger.error("登入失敗，程式終止")
+                return False
+
+    def cookies_login(self) -> bool:
+        cookie_jar = cookiejar.MozillaCookieJar(self.config.cookie_path)
         cookie_jar.load()
-        self.session = requests.Session(impersonate=config.browser)  # type: ignore
         self.session.cookies.update({
             cookie.name: cookie.value for cookie in cookie_jar if cookie.value
         })
-        self.base_url = "https://home.gamer.com.tw/"
+        return self.login_success()
+
+    def password_login(self, account: str, password: str) -> bool:
+        if not password:
+            self.logger.debug("未提供密碼，跳過密碼登入流程")
+            return False
+        cookies = {"_ga": "c8763"}
+        try:
+            # Phase 1: Get alternativeCaptcha
+            response = self.session.get(self.LOGIN_URL_PHASE1, cookies=cookies)
+            if response.status_code != 200:
+                return False
+
+            alternative_captcha = self._get_alternative_captcha(response.text)
+            if not alternative_captcha:
+                return False
+
+            # Phase 2: Login
+            login_data = {
+                "userid": account,
+                "password": password,
+                "alternativeCaptcha": alternative_captcha,
+            }
+
+            response = self.session.post(self.LOGIN_URL_PHASE2, data=login_data, cookies=cookies)
+
+            return self.login_success()
+
+        except Exception as e:
+            self.logger.error(f"密碼登入錯誤: {e!s}")
+            return False
+
+    def login_success(self) -> bool:
+        """檢查是否成功登入, 被 redirect 代表登入失敗, 回傳 False"""
+        url = "https://home.gamer.com.tw/setting/"
+        self.logger.debug("檢查登入狀態")
+        response = self.session.get(url, headers=self.headers)
+        result = response.redirect_count == 0
+        self.logger.debug(f"登入狀態檢查結果: {'成功' if result else '失敗'}")
+        return result
+
+    def _get_alternative_captcha(self, response_text: str) -> str:
+        """檢查密碼登入的 captcha 值"""
+        pattern = r'<input type="hidden" name="alternativeCaptcha" value="(\w+)"'
+        match = re.search(pattern, response_text)
+        return match.group(1) if match else ""
+
+
+class GamerAPI(GamerAPIBasic):
+    """基本API類別, 用於添加用戶(添加黑名單、好友等)以及匯出用戶列表"""
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
         self.api_url = "https://api.gamer.com.tw/user/v1/friend_add.php"
-        self.headers = {"User-Agent": config.user_agent, "Referer": "https://www.gamer.com.tw/"}
-        self.csrf_token = None
 
     def add_user(self, uid: str, category: str = "bad") -> str:
         """
@@ -80,8 +159,8 @@ class GamerAPI:
 
         Args:
             uids: 用戶ID列表
+            existing_users: 目前的既有用戶清單，清單內的用戶會被跳過避免重複發送請求
             category: 操作類型, 預設為 "bad" (加入黑名單)
-            username: 使用者名稱, 用於獲取該使用者的好友(黑名單)清單
 
         Returns:
             Dict[str, Any]: 每個用戶ID對應的操作結果
@@ -92,9 +171,7 @@ class GamerAPI:
         total_users = len(uids)
         processed_count = 0
 
-        self.logger.info(
-            f"開始批量處理用戶 {logger_mapping[category]} 操作，共 {total_users} 個用戶"
-        )
+        self.logger.info(f"開始進行用戶 {logger_mapping[category]} 操作，共 {total_users} 個用戶")
 
         for uid in uids:
             processed_count += 1
@@ -120,7 +197,7 @@ class GamerAPI:
 
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        self.logger.info(f"批量處理完成，成功處理: {processed_count}/{total_users}")
+        self.logger.info(f"處理完成，成功處理: {processed_count}/{total_users}")
         return results
 
     def export_users(self, type_id: int = 5) -> list[str]:
@@ -132,8 +209,8 @@ class GamerAPI:
             list[str]: 黑名單用戶ID列表
         """
         page_mapping: dict[int, str] = {1: "好友", 2: "待確認", 3: "追蹤", 4: "追蹤者", 5: "黑名單"}
-        self.logger.info(f"開始讀取用戶 {self.config.username} 的{page_mapping[type_id]}清單")
-        url = f"https://home.gamer.com.tw/friendList.php?user={self.config.username}&t={type_id}"
+        self.logger.info(f"開始讀取用戶 {self.config.account} 的{page_mapping[type_id]}清單")
+        url = f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t={type_id}"
 
         try:
             response = self.session.get(url, headers=self.headers)
@@ -142,14 +219,14 @@ class GamerAPI:
             user_ids = tree.xpath("//div[@class='user_id']/@data-origin")
 
             if not user_ids:
-                self.logger.info(f"用戶 {self.config.username} 的清單目前無資料")
+                self.logger.info(f"用戶 {self.config.account} 的清單目前無資料")
                 return []
 
             self.logger.info(f"成功讀取清單，共 {len(user_ids)} 筆資料")
             return user_ids
 
         except Exception as e:
-            self.logger.error(f"用戶 {self.config.username} 的清單讀取失敗: {e}")
+            self.logger.error(f"用戶 {self.config.account} 的清單讀取失敗: {e}")
             return []
 
     def login_success(self) -> bool:
@@ -208,12 +285,12 @@ class GamerAPIExtended(GamerAPI):
 
         return message
 
-    def batch_remove_user(self, uids: list[str]) -> dict[str, Any]:
+    def remove_users(self, uids: list[str]) -> dict[str, Any]:
         results = {}
         total_users = len(uids)
         processed_count = 0
 
-        self.logger.info(f"開始批量移除用戶，共 {total_users} 個用戶")
+        self.logger.info(f"開始移除用戶，共 {total_users} 個用戶")
 
         for uid in uids:
             processed_count += 1
@@ -229,7 +306,7 @@ class GamerAPIExtended(GamerAPI):
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
         success_count = sum(1 for r in results.values() if "失敗" not in r)
-        self.logger.info(f"批量移除完成，成功: {success_count}/{total_users}")
+        self.logger.info(f"用戶移除完成，成功: {success_count}/{total_users}")
         return results
 
     def auto_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> None:
@@ -265,21 +342,21 @@ class GamerAPIExtended(GamerAPI):
         except Exception as e:
             self.logger.error(f"用戶 {uid} 自動檢查處理失敗: {e}")
 
-    def batch_auto_remove_user(
+    def auto_remove_users(
         self,
         uids: list[str],
         min_visits: int = 50,
         min_days: int = 60,
     ) -> None:
         total_users = len(uids)
-        self.logger.info(f"開始批量自動檢查用戶，共 {total_users} 個用戶")
+        self.logger.info(f"開始自動檢查用戶，共 {total_users} 個用戶")
 
         for index, uid in enumerate(uids, 1):
             self.logger.info(f"處理進度: {index}/{total_users}")
             self.auto_remove_user(uid, min_visits, min_days)
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        self.logger.info(f"批量自動檢查完成，共處理 {total_users} 個用戶")
+        self.logger.info(f"自動檢查完成，共處理 {total_users} 個用戶")
 
     def get_user_info(self, uid: str) -> UserInfo:
         """取得用戶資訊, 用於自動刪除用戶
@@ -364,9 +441,8 @@ def init_app(args: Namespace, config_name: str = "config.json") -> tuple[Config,
 
 
 def real_main(args: Namespace, config: Config, api: GamerAPIExtended) -> int:
-    if not api.login_success():
-        logger.error("登入失敗，請更新 Cookies")
-        return 1
+    if not api.login():
+        sys.exit(0)
 
     if "export" in args.mode:
         logger.info("開始匯出黑名單...")
@@ -392,7 +468,7 @@ def real_main(args: Namespace, config: Config, api: GamerAPIExtended) -> int:
     if "clean" in args.mode:
         logger.info("開始清理黑名單...")
         if args.force_clean or len(existing_users) > config.friend_num:
-            api.batch_auto_remove_user(
+            api.auto_remove_users(
                 existing_users, min_visits=config.min_visit, min_days=config.min_day
             )
         else:
@@ -405,6 +481,8 @@ def main(args: Namespace, config_name: str = "config.json") -> int:
     try:
         config, api = init_app(args, config_name)
         return real_main(args, config, api)
+    except RequestException as e:
+        logger.error(f"網路錯誤: {e}")
     except ValueError as e:
         logger.error(f"輸入錯誤: {e}")
     except RuntimeError as e:

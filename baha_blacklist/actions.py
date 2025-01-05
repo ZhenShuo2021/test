@@ -4,7 +4,7 @@ import os
 import sys
 
 from .config import Config, ConfigLoader
-from .main import GamerAPIExtended
+from .gamer_api import GamerAPIExtended
 from .utils import base64_decode, base64_encode, write_users
 
 

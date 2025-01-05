@@ -314,7 +314,7 @@ class GamerAPIExtended(GamerAPI):
             response.raise_for_status()
             result = response.text
             message = f"{result}"
-            self.logger.debug(f"用戶 {uid} 移除成功: {message}")
+            self.logger.debug(f"用戶 {uid} 移除成功")
 
         except Exception as e:
             message = f"用戶移除失敗: {e}"

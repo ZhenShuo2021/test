@@ -1,4 +1,5 @@
 import http.cookiejar as cookiejar
+import json
 import logging
 import random
 import re
@@ -6,27 +7,27 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urljoin
 
 from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 from lxml import html
 
 from .config import Config
-from .utils import get_default_user_info, to_unicode
+from .utils import get_default_user_info, decode_response_dict, to_unicode
 
 logger = logging.getLogger("baha_blacklist")
+logger_time_fmt = "%Y-%m-%d"
 
 
 @dataclass
 class UserInfo:
-    """由 block_list.php 取得的用戶資訊，用於篩選是否刪除用戶
-
-    url: https://api.gamer.com.tw/home/v1/block_list.php?userid=<uid>
-    """
-
     uid: str
     visit_count: int
     last_login: datetime
+
+    def __str__(self) -> str:
+        return f"UserInfo(uid={self.uid}, visit_count={self.visit_count}, last_login={self.last_login.strftime(logger_time_fmt)})"
 
 
 class GamerLogin:
@@ -230,6 +231,50 @@ class GamerAPI(GamerLogin):
             self.logger.error(f"用戶 {self.config.account} 的清單讀取失敗: {e}")
             return []
 
+    def get_user_info(self, uid: str) -> UserInfo:
+        """取得用戶資訊, 用於判斷是否刪除用戶
+
+        Returns:
+            UserInfo 物件
+        """
+        self.logger.debug(f"開始讀取用戶 {uid} 資訊")
+        url = f"https://api.gamer.com.tw/home/v1/block_list.php?userid={uid}"
+        default_visit_count, default_login_date = get_default_user_info(self.config.min_visit)
+
+        def extract_response(data: dict[str, Any]) -> UserInfo | None:
+            try:
+                for block in data["data"]["blocks"]:
+                    if block.get("type") == "user_info":
+                        info = {item["name"]: item["value"] for item in block["data"]["items"]}
+                        vc = info.get("上站次數", default_visit_count)
+                        ll = info.get("上站日期", default_login_date)
+
+                        visit_count = int(vc)
+                        last_login = datetime.strptime(ll, "%Y-%m-%d")
+                        return UserInfo(uid=uid, visit_count=visit_count, last_login=last_login)
+                return None
+            except (json.JSONDecodeError, KeyError) as e:
+                self.logger.error(f"JSON response 解碼失敗: {e}")
+                return None
+
+        try:
+            response = self.session.get(url, headers=self.headers)
+            response.raise_for_status()
+            data = decode_response_dict(response.json())
+
+            user_info = extract_response(data)
+            if user_info:
+                return user_info
+
+        except RequestException as e:
+            self.logger.error(f"用戶 {uid} 網路請求失敗: {e}")
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"用戶 {uid} 資料解析失敗: {e}")
+        except Exception as e:
+            self.logger.error(f"用戶 {uid} 資訊讀取失敗: {e}")
+
+        return UserInfo(uid=uid, visit_count=default_visit_count, last_login=default_login_date)
+
     def _update_csrf(self) -> None:
         self.logger.debug("開始更新 CSRF Token")
         response = self.session.get(self.base_url, headers=self.headers)
@@ -301,19 +346,19 @@ class GamerAPIExtended(GamerAPI):
         self.logger.info(f"用戶移除完成，成功: {success_count}/{total_users}")
         return results
 
-    def auto_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> None:
-        """
-        自動檢查並移除不符合條件的用戶
+    def smart_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> None:
+        """檢查並移除不符合條件的用戶
+
         Args:
             uid: 用戶ID
             min_visits: 最小上站次數
             min_days: 最近登入天數最小容許值
         """
-        self.logger.debug(f"開始檢查用戶 {uid} (最小上站次數: {min_visits}, 最小天數: {min_days})")
+        self.logger.debug(f"開始用戶 {uid} 移除任務")
 
         try:
             user_info = self.get_user_info(uid)
-            self.logger.debug(f"用戶 {uid} 資訊: {user_info}")
+            self.logger.debug(f"用戶資訊: {user_info}")
 
             last_login = (datetime.now() - user_info.last_login).days
 
@@ -327,70 +372,29 @@ class GamerAPIExtended(GamerAPI):
                 msg = self.remove_user(uid)
                 self.logger.debug(f"用戶 {uid} 已移除: {', '.join(reasons)}, 處理結果: {msg}")
             else:
-                self.logger.debug(
-                    f"用戶 {uid} 已保留 (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})",
-                )
+                msg = f"用戶 {uid} 已保留 (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})"
+                self.logger.debug(msg)
 
         except Exception as e:
             self.logger.error(f"用戶 {uid} 自動檢查處理失敗: {e}")
 
-    def auto_remove_users(
+    def smart_remove_users(
         self,
         uids: list[str],
         min_visits: int = 50,
         min_days: int = 60,
     ) -> None:
         total_users = len(uids)
-        self.logger.info(f"開始自動檢查用戶，共 {total_users} 個用戶")
+        self.logger.info(
+            f"開始自動檢查用戶，共 {total_users} 個用戶，移除門檻為：「最小上站次數: {min_visits}, 最小天數: {min_days}」"
+        )
 
         for index, uid in enumerate(uids, 1):
             self.logger.info(f"處理進度: {index}/{total_users}")
-            self.auto_remove_user(uid, min_visits, min_days)
+            self.smart_remove_user(uid, min_visits, min_days)
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
         self.logger.info(f"自動檢查完成，共處理 {total_users} 個用戶")
-
-    def get_user_info(self, uid: str) -> UserInfo:
-        """取得用戶資訊, 用於自動刪除用戶
-
-        Returns:
-            UserInfo 物件
-        """
-        self.logger.debug(f"開始讀取用戶 {uid} 資訊")
-        url = f"https://api.gamer.com.tw/home/v1/block_list.php?userid={uid}"
-
-        try:
-            response = self.session.get(url, headers=self.headers)
-            response.raise_for_status()
-            data = response.json()
-            visit_count, login_date = get_default_user_info(self.config.min_visit)
-
-            for block in data.get("data", {}).get("blocks", []):
-                if block.get("type") == "user_info":
-                    items = block.get("data", {}).get("items", [])
-                    for item in items:
-                        name = item.get("name")
-                        value = item.get("value")
-
-                        if name == self.user_info_time:  # 上站次數
-                            visit_count = int(value)
-                        elif name == self.user_info_login:  # 上站日期（上次登入日期）
-                            login_date = datetime.strptime(value, "%Y-%m-%d")
-
-            self.logger.debug(
-                f"用戶 {uid} 資訊讀取成功 (上站次數: {visit_count}, 上次登入: {login_date})"
-            )
-            return UserInfo(uid=uid, visit_count=visit_count, last_login=login_date)
-
-        except RequestException as e:
-            self.logger.error(f"用戶 {uid} 網路請求失敗: {e}")
-        except (ValueError, KeyError, TypeError) as e:
-            self.logger.error(f"用戶 {uid} 資料解析失敗: {e}")
-        except Exception as e:
-            self.logger.error(f"用戶 {uid} 資訊讀取失敗: {e}")
-
-        visit_count, login_date = get_default_user_info(self.config.min_visit)
-        return UserInfo(uid=uid, visit_count=visit_count, last_login=login_date)
 
     def _get_friendList_csrf(self) -> str:
         """取得 friendList.php 專用的 CSRF Token
@@ -398,7 +402,7 @@ class GamerAPIExtended(GamerAPI):
         see: https://home.gamer.com.tw/friendList.php?user=[你的帳號]&t=5
         """
         self.logger.debug("開始取得 friendList CSRF Token")
-        csrf_token_url = f"{self.base_url}ajax/getCSRFToken.php"
+        csrf_token_url = urljoin(self.base_url, "ajax/getCSRFToken.php")
         headers_with_referer = {
             **self.headers,
             "Sec-Fetch-Dest": "empty",

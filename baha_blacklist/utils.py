@@ -1,5 +1,6 @@
 import argparse
 import base64
+import json
 import os
 from datetime import datetime
 from typing import Any
@@ -37,14 +38,19 @@ def get_default_user_info(min_visit: int) -> tuple[int, datetime]:
     return visit_count, login_date
 
 
-def base64_encode(data: str) -> str:
+def encode_base64(data: str) -> str:
     """編碼成base64格式"""
     return base64.b64encode(data.encode("utf-8")).decode("utf-8")
 
 
-def base64_decode(encoded_data: str) -> str:
+def decode_base64(encoded_data: str) -> str:
     """解碼回字串"""
     return base64.b64decode(encoded_data.encode("utf-8")).decode("utf-8")
+
+
+def decode_response_dict(response: dict[str, Any]) -> dict[str, Any]:
+    """懶惰的解碼方式，只適用於簡單 unicode"""
+    return json.loads(json.dumps(response, ensure_ascii=False))
 
 
 class CustomHelpFormatter(argparse.RawTextHelpFormatter):

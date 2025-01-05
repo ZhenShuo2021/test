@@ -58,7 +58,7 @@ def real_main(args: Namespace, config: Config, api: GamerAPIExtended) -> int:
     if "clean" in args.mode:
         logger.info("開始清理黑名單...")
         if args.force_clean or len(existing_users) > config.friend_num:
-            api.auto_remove_users(
+            api.smart_remove_users(
                 existing_users, min_visits=config.min_visit, min_days=config.min_day
             )
         else:

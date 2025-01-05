@@ -5,7 +5,7 @@ import sys
 
 from .config import Config, ConfigLoader
 from .gamer_api import GamerAPIExtended
-from .utils import base64_decode, base64_encode, write_users
+from .utils import decode_base64, encode_base64, write_users
 
 
 def cookies_to_base64(
@@ -16,7 +16,7 @@ def cookies_to_base64(
     """讀取 cookies 將內容進行 Base64 編碼後寫入或印出"""
     with open(input_file) as f:
         cookies_content = f.read()
-    cookies_base64 = base64_encode(cookies_content)
+    cookies_base64 = encode_base64(cookies_content)
     if write:
         with open(output_file, "w") as f:
             f.write(cookies_base64)
@@ -29,7 +29,7 @@ def decode_cookies_from_base64(cookie_path: str) -> None:
     if not cookies_base64:
         raise ValueError("環境變數 COOKIES_BASE64 未設定或為空")
 
-    cookies_content = base64_decode(cookies_base64)
+    cookies_content = decode_base64(cookies_base64)
 
     with open(cookie_path, "w") as f:
         f.write(cookies_content)

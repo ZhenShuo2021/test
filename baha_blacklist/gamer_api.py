@@ -14,7 +14,7 @@ from curl_cffi.requests.exceptions import RequestException
 from lxml import html
 
 from .config import Config
-from .utils import get_default_user_info, decode_response_dict, to_unicode
+from .utils import decode_response_dict, get_default_user_info, to_unicode
 
 logger = logging.getLogger("baha_blacklist")
 logger_time_fmt = "%Y-%m-%d"
@@ -33,37 +33,28 @@ class UserInfo:
 class GamerLogin:
     "登入和建立 Session"
 
-    LOGIN_URL_PHASE1 = "https://user.gamer.com.tw/login.php"
-    LOGIN_URL_PHASE2 = "https://user.gamer.com.tw/ajax/do_login.php"
+    BASE_URL = "https://www.gamer.com.tw/"
+    __LOGIN_COOKIES = {"_ga": "GA1.1.135792468.2468013579"}
 
     def __init__(self, config: Config) -> None:
         self.logger = logger
         self.config = config
-        self.headers = {"User-Agent": config.user_agent}
-        self.session = requests.Session(headers=self.headers, impersonate=self.config.browser)  # type: ignore
-        self.base_url = "https://www.gamer.com.tw/"
+        self.session = self.new_session()
         self.csrf_token = None
+        self.login_methods = [self.login_password, self.login_cookies]
 
     def login(self) -> bool:
-        """包裝登入函式們"""
-
         self.logger.debug("開始登入...")
-        success = self.password_login(self.config.account, self.config.password)
-        if success:
-            self.logger.debug("密碼登入成功")
-            return success
-        else:
-            self.logger.debug("密碼登入失敗，改用 cookies 登入")
-            time.sleep(1)
-            success = self.cookies_login()
-            if success:
-                self.logger.debug("cookies 登入成功")
-                return success
-            else:
-                self.logger.error("登入失敗，程式終止")
-                return False
+        for method in self.login_methods:
+            if method():
+                self.logger.debug(f"{method.__name__} 登入成功")
+                return True
+            self.logger.debug(f"{method.__name__} 登入失敗")
 
-    def cookies_login(self) -> bool:
+        self.logger.error("所有登入方式皆失敗，程式終止")
+        return False
+
+    def login_cookies(self) -> bool:
         cookie_jar = cookiejar.MozillaCookieJar(self.config.cookie_path)
         cookie_jar.load()
         self.session.cookies.update({
@@ -71,50 +62,56 @@ class GamerLogin:
         })
         return self.login_success()
 
-    def password_login(self, account: str, password: str) -> bool:
-        if not password:
+    def login_password(self) -> bool:
+        if not self.config.password:
             self.logger.debug("未提供密碼，跳過密碼登入流程")
             return False
-        cookies = {"_ga": "c8763"}
+
         try:
-            # Phase 1: Get alternativeCaptcha
-            response = self.session.get(self.LOGIN_URL_PHASE1, cookies=cookies)
-            if response.status_code != 200:
-                return False
-
-            alternative_captcha = self._get_alternative_captcha(response.text)
-            if not alternative_captcha:
-                return False
-
-            # Phase 2: Login
-            login_data = {
-                "userid": account,
-                "password": password,
-                "alternativeCaptcha": alternative_captcha,
-            }
-
-            response = self.session.post(self.LOGIN_URL_PHASE2, data=login_data, cookies=cookies)
-
-            return self.login_success()
-
+            if alternative_captcha := self.__login_password_phase1():
+                self.__login_password_phase2(alternative_captcha)
+                return self.login_success()
         except Exception as e:
             self.logger.error(f"密碼登入錯誤: {e!s}")
-            return False
+
+        return False
 
     def login_success(self) -> bool:
-        """檢查是否成功登入, 被 redirect 代表登入失敗, 回傳 False"""
+        """檢查是否成功登入, 被重定向代表登入失敗, 回傳 False"""
         url = "https://home.gamer.com.tw/setting/"
         self.logger.debug("檢查登入狀態")
         response = self.session.get(url, headers=self.headers)
-        result = response.redirect_count == 0
-        self.logger.debug(f"登入狀態檢查結果: {'成功' if result else '失敗'}")
-        return result
+        login_status = response.redirect_count == 0
+        self.logger.debug(f"登入狀態檢查結果: {'成功' if login_status else '失敗'}")
+        return login_status
 
-    def _get_alternative_captcha(self, response_text: str) -> str:
-        """檢查密碼登入的 captcha 值"""
+    def new_session(self, extra_headers: dict[str, str] = {}) -> requests.Session:
+        self.headers = {"User-Agent": self.config.user_agent, **extra_headers}
+        return requests.Session(headers=self.headers, impersonate=self.config.browser)  # type: ignore
+
+    def __login_password_phase1(self) -> str | None:
+        """登入前置步驟，回傳 None 代表失敗"""
+        url = "https://user.gamer.com.tw/login.php"
+        login_status = None
+        response = self.session.get(url, cookies=self.__LOGIN_COOKIES)
+        if response.status_code != 200:
+            return login_status
+
         pattern = r'<input type="hidden" name="alternativeCaptcha" value="(\w+)"'
-        match = re.search(pattern, response_text)
-        return match.group(1) if match else ""
+        match = re.search(pattern, response.text)
+        return match.group(1) if match else login_status
+
+    def __login_password_phase2(self, alternative_captcha: str) -> None:
+        """執行登入"""
+        url = "https://user.gamer.com.tw/ajax/do_login.php"
+        login_data = {
+            "userid": self.config.account,
+            "password": self.config.password,
+            "alternativeCaptcha": alternative_captcha,
+        }
+
+        response = self.session.post(url, data=login_data, cookies=self.__LOGIN_COOKIES)
+        response.raise_for_status()
 
 
 class GamerAPI(GamerLogin):
@@ -277,7 +274,7 @@ class GamerAPI(GamerLogin):
 
     def _update_csrf(self) -> None:
         self.logger.debug("開始更新 CSRF Token")
-        response = self.session.get(self.base_url, headers=self.headers)
+        response = self.session.get(self.BASE_URL, headers=self.headers)
         response.raise_for_status()
         self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
 
@@ -304,7 +301,7 @@ class GamerAPIExtended(GamerAPI):
 
         try:
             csrf_token = self._get_friendList_csrf()
-            delete_url = f"{self.base_url}ajax/friend_del.php"
+            delete_url = f"{self.BASE_URL}ajax/friend_del.php"
             data = {
                 "fid": uid,
                 "token": csrf_token,
@@ -402,7 +399,7 @@ class GamerAPIExtended(GamerAPI):
         see: https://home.gamer.com.tw/friendList.php?user=[你的帳號]&t=5
         """
         self.logger.debug("開始取得 friendList CSRF Token")
-        csrf_token_url = urljoin(self.base_url, "ajax/getCSRFToken.php")
+        csrf_token_url = urljoin(self.BASE_URL, "ajax/getCSRFToken.php")
         headers_with_referer = {
             **self.headers,
             "Sec-Fetch-Dest": "empty",

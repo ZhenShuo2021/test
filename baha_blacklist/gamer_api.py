@@ -87,7 +87,7 @@ class GamerLogin:
 
     def new_session(self, extra_headers: dict[str, str] = {}) -> requests.Session:
         self.headers = {"User-Agent": self.config.user_agent, **extra_headers}
-        return requests.Session(headers=self.headers, impersonate=self.config.browser)  # type: ignore
+        return requests.Session(headers=self.headers, impersonate=self.config.browser)
 
     def __login_password_phase1(self) -> str | None:
         """登入前置步驟，回傳 None 代表失敗"""

@@ -5,6 +5,8 @@ from argparse import Namespace
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from curl_cffi.requests.impersonate import BrowserTypeLiteral
+
 logger = logging.getLogger()
 
 
@@ -17,13 +19,13 @@ class Config:
     blacklist_src: str = (
         "https://github.com/ZhenShuo2021/baha-blacklist/raw/refs/heads/main/blacklist.txt"
     )
-    min_sleep: float = 1.0
-    max_sleep: float = 10.0
+    min_sleep: int | float = 1.0
+    max_sleep: int | float = 10.0
     min_visit: int = 5
     min_day: int = 1
     friend_num: int = 100
     user_agent: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    browser: str = "chrome131"
+    browser: BrowserTypeLiteral = "chrome131"
 
     def validate(self) -> None:
         # 別忘了修改 actions.py

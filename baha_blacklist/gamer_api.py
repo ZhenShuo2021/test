@@ -135,15 +135,12 @@ class GamerAPI(GamerLogin):
 
         try:
             response = self.session.post(self.api_url, headers=self.headers, data=data)
-            if response.status_code == 200:
-                result = response.json()
-                self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
-            else:
-                result = f"狀態碼錯誤: {response.status_code}"
-                self.logger.error(f"用戶 {uid} {category} 操作失敗: {result}")
-        except Exception as e:
-            result = f"用戶操作失敗: {e}"
-            self.logger.error(f"用戶 {uid} {category} 操作異常: {e!s}")
+            response.raise_for_status()
+            result = str(response.json().get("data"))
+            self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
+        except RequestException as e:
+            result = f"狀態碼錯誤: {e}"
+            self.logger.error(f"用戶 {uid} {category} 操作網路請求失敗: {result}")
 
         return result
 
@@ -184,15 +181,14 @@ class GamerAPI(GamerLogin):
                 self.logger.error(f"{error_msg} ({processed_count}/{total_users})")
                 raise Exception(error_msg)
 
-            result = self.add_user(uid, category)
-            results[uid] = result
-            self.logger.info(f"處理進度: {processed_count}/{total_users}")
-
-            if "錯誤" in result or "失敗" in result:
-                consecutive_errors += 1
-                self.logger.error(f"用戶 {uid} 處理失敗 ({processed_count}/{total_users})")
-            else:
+            try:
+                result = self.add_user(uid, category)
+                results[uid] = result
+                self.logger.info(f"處理進度: {processed_count}/{total_users}")
                 consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                self.logger.error(f"用戶 {uid} 處理失敗: {e} ({processed_count}/{total_users})")
 
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
@@ -264,11 +260,11 @@ class GamerAPI(GamerLogin):
                 return user_info
 
         except RequestException as e:
-            self.logger.error(f"用戶 {uid} 網路請求失敗: {e}")
+            self.logger.error(f"取得用戶 {uid} 資訊時網路請求失敗: {e}")
         except (ValueError, TypeError) as e:
-            self.logger.error(f"用戶 {uid} 資料解析失敗: {e}")
+            self.logger.error(f"取得用戶 {uid} 資訊時解析失敗: {e}")
         except Exception as e:
-            self.logger.error(f"用戶 {uid} 資訊讀取失敗: {e}")
+            self.logger.error(f"取得用戶 {uid} 資訊時讀取失敗: {e}")
 
         return UserInfo(uid=uid, visit_count=default_visit_count, last_login=default_login_date)
 
@@ -309,13 +305,12 @@ class GamerAPIExtended(GamerAPI):
 
             response = self.session.post(delete_url, headers=self.headers, data=data)
             response.raise_for_status()
-            result = response.text
-            message = f"{result}"
+            message = response.text
             self.logger.debug(f"用戶 {uid} 移除成功")
 
-        except Exception as e:
+        except RequestException as e:
             message = f"用戶移除失敗: {e}"
-            self.logger.error(f"用戶 {uid} 移除失敗: {e!s}")
+            self.logger.error(f"移除用戶 {uid} 時網路請求失敗: {e!s}")
 
         return message
 
@@ -323,6 +318,7 @@ class GamerAPIExtended(GamerAPI):
         results = {}
         total_users = len(uids)
         processed_count = 0
+        consecutive_errors = 0
 
         self.logger.info(f"開始移除用戶，共 {total_users} 個用戶")
 
@@ -332,8 +328,10 @@ class GamerAPIExtended(GamerAPI):
                 result = self.remove_user(uid)
                 results[uid] = result
                 self.logger.info(f"移除進度: {processed_count}/{total_users}")
+                consecutive_errors = 0
             except Exception as e:
-                error_msg = f"處理失敗: {e}"
+                consecutive_errors += 1
+                error_msg = f"用戶移除失敗: {e}"
                 results[uid] = error_msg
                 self.logger.error(f"用戶 {uid} {error_msg} ({processed_count}/{total_users})")
 
@@ -372,8 +370,8 @@ class GamerAPIExtended(GamerAPI):
                 msg = f"用戶 {uid} 已保留 (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})"
                 self.logger.debug(msg)
 
-        except Exception as e:
-            self.logger.error(f"用戶 {uid} 自動檢查處理失敗: {e}")
+        except RequestException as e:
+            self.logger.error(f"移除用戶 {uid} 時網路請求失敗: {e!s}")
 
     def smart_remove_users(
         self,
@@ -383,15 +381,23 @@ class GamerAPIExtended(GamerAPI):
     ) -> None:
         total_users = len(uids)
         self.logger.info(
-            f"開始自動檢查用戶，共 {total_users} 個用戶，移除門檻為：「最小上站次數: {min_visits}, 最小天數: {min_days}」"
+            f"開始移除用戶，共 {total_users} 個用戶，移除門檻為：「最小上站次數: {min_visits}, 最小天數: {min_days}」"
         )
+        consecutive_errors = 0
 
         for index, uid in enumerate(uids, 1):
-            self.logger.info(f"處理進度: {index}/{total_users}")
-            self.smart_remove_user(uid, min_visits, min_days)
+            try:
+                self.smart_remove_user(uid)
+                self.logger.info(f"移除進度: {index}/{total_users}")
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                error_msg = f"用戶移除失敗: {e}"
+                self.logger.error(f"用戶 {uid} {error_msg} ({index}/{total_users})")
+
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        self.logger.info(f"自動檢查完成，共處理 {total_users} 個用戶")
+        self.logger.info(f"用戶移除完成，共處理 {total_users} 個用戶")
 
     def _get_friendList_csrf(self) -> str:
         """取得 friendList.php 專用的 CSRF Token

@@ -33,7 +33,7 @@ class UserInfo:
 class GamerLogin:
     "登入和建立 Session"
 
-    BASE_URL = "https://www.gamer.com.tw/"
+    BASE_URL = "https://www.gamer.com.tw/"  # 小心有些api使用home.gamer.com而不是www
     __LOGIN_COOKIES = {"_ga": "GA1.1.135792468.2468013579"}
 
     def __init__(self, config: Config) -> None:
@@ -112,6 +112,7 @@ class GamerLogin:
 
         response = self.session.post(url, data=login_data, cookies=self.__LOGIN_COOKIES)
         response.raise_for_status()
+        self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
 
 
 class GamerAPI(GamerLogin):
@@ -130,7 +131,7 @@ class GamerAPI(GamerLogin):
         self.logger.debug(f"開始處理用戶 {uid}: {category} 操作")
 
         if not self.csrf_token:
-            self._update_csrf()
+            self._update_global_csrf()
         data = {"uid": uid, "category": category}
 
         try:
@@ -268,19 +269,48 @@ class GamerAPI(GamerLogin):
 
         return UserInfo(uid=uid, visit_count=default_visit_count, last_login=default_login_date)
 
-    def _update_csrf(self) -> None:
-        self.logger.debug("開始更新 CSRF Token")
-        response = self.session.get(self.BASE_URL, headers=self.headers)
+    def _update_global_csrf(self) -> None:
+        self.logger.debug("開始更新全域 CSRF Token")
+        url = "https://www.gamer.com.tw/ajax/get_csrf_token.php"
+        response = self.session.get(url, headers=self.headers)
         response.raise_for_status()
-        self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
 
+        self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken") or response.text[:16]
+        self.session.cookies.update({"ckBahamutCsrfToken": self.csrf_token})
         if not self.csrf_token:
-            error_msg = "無法取得 CSRF Token，請更新登入資料"
+            error_msg = "無法取得 CSRF Token，請更新登入資料或改為 Cookies 登入"
             self.logger.error(error_msg)
             raise Exception(error_msg)
 
         self.headers["x-bahamut-csrf-token"] = self.csrf_token  # type: ignore
         self.logger.debug("CSRF Token 更新成功")
+
+    def _get_temp_csrf(self) -> str:
+        """取得暫時的 CSRF Token
+
+        see: https://home.gamer.com.tw/friendList.php?user=[你的帳號]&t=5
+        """
+        self.logger.debug("開始取得 friendList CSRF Token")
+        url = "https://home.gamer.com.tw/ajax/getCSRFToken.php"
+        headers = self.headers.copy()
+        headers.pop("accept", None)
+        headers.pop("origin", None)
+        headers_with_referer = {
+            **self.headers,
+            "accept": "*/*",
+            "referer": f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t=5",
+            "content-type": "text/html; charset=UTF-8",
+            "x-requested-with": "XMLHttpRequest",
+        }
+
+        csrf_response = self.session.get(url, headers=headers_with_referer)
+        csrf_response.raise_for_status()
+        csrf_token = csrf_response.text.strip()
+
+        if not csrf_token:
+            raise Exception("CSRF Token 取得失敗，請更新 cookies 文件")
+
+        return csrf_token
 
 
 class GamerAPIExtended(GamerAPI):
@@ -296,7 +326,7 @@ class GamerAPIExtended(GamerAPI):
         self.logger.debug(f"開始移除用戶 {uid}")
 
         try:
-            csrf_token = self._get_friendList_csrf()
+            csrf_token = self._get_temp_csrf()
             delete_url = f"{self.BASE_URL}ajax/friend_del.php"
             data = {
                 "fid": uid,
@@ -398,26 +428,3 @@ class GamerAPIExtended(GamerAPI):
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
         self.logger.info(f"用戶移除完成，共處理 {total_users} 個用戶")
-
-    def _get_friendList_csrf(self) -> str:
-        """取得 friendList.php 專用的 CSRF Token
-
-        see: https://home.gamer.com.tw/friendList.php?user=[你的帳號]&t=5
-        """
-        self.logger.debug("開始取得 friendList CSRF Token")
-        csrf_token_url = urljoin(self.BASE_URL, "ajax/getCSRFToken.php")
-        headers_with_referer = {
-            **self.headers,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-        }
-
-        csrf_response = self.session.get(csrf_token_url, headers=headers_with_referer)
-        csrf_response.raise_for_status()
-        csrf_token = csrf_response.text.strip()
-
-        if not csrf_token:
-            raise Exception("CSRF Token 取得失敗，請更新 cookies 文件")
-
-        return csrf_token

@@ -6,7 +6,7 @@
 
 我只想開心看動畫偏偏有人一直抱怨= =吐槽劇情跟碎碎念是兩回事欸，把他們都 ban 了之後想說可以分享這個名單，又發現巴哈沒有匯入工具所以自己寫了一個黑單工具。
 
-https://github.com/user-attachments/assets/1d1640de-eb2d-41ad-b788-e529fc00bbfb
+https://github.com/user-attachments/assets/cb662a07-29cc-4f24-9fa1-7f26f8b43658
 
 ## 說明
 

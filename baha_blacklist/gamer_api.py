@@ -285,7 +285,7 @@ class GamerAPI(GamerLogin):
 
     def _update_global_csrf(self) -> None:
         self.logger.debug("開始更新全域 CSRF Token")
-        url = "https://www.gamer.com.tw/ajax/get_csrf_token.php"
+        url = "https://www.gamer.com.tw/ajax/get_csrf_token.php "
         response = self.session.get(url)
         response.raise_for_status()
 
@@ -295,7 +295,7 @@ class GamerAPI(GamerLogin):
             self.logger.error(error_msg)
             raise Exception(error_msg)
 
-        self.session.headers.update({"x-bahamut-csrf-token": self.csrf_token})
+        self.session.headers.update({"x-bahamut-csrf-token": self.csrf_token})  # type: ignore[unreachable]
         self.session.cookies.update({"ckBahamutCsrfToken": self.csrf_token})
         self.headers["x-bahamut-csrf-token"] = self.csrf_token
         self.logger.debug("CSRF Token 更新成功")

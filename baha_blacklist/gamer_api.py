@@ -33,7 +33,6 @@ class GamerLogin:
     "登入和建立 Session"
 
     BASE_URL = "https://www.gamer.com.tw/"  # 小心有些api使用home.gamer.com而不是www
-    __LOGIN_COOKIES = {"_ga": "GA1.1.135792468.2468013579"}
 
     def __init__(self, config: Config) -> None:
         self.logger = logger
@@ -64,9 +63,11 @@ class GamerLogin:
             self.logger.debug("未提供密碼，跳過密碼登入流程")
             return False
 
+        fake_cookie = {"_ga": "GA1.1.135792468.2468013579"}
+        self.session.cookies.update(fake_cookie)
         try:
-            if alternative_captcha := self.__login_password_phase1():
-                self.__login_password_phase2(alternative_captcha)
+            if alternative_captcha := self.__login_password_phase1(fake_cookie):
+                self.__login_password_phase2(alternative_captcha, fake_cookie)
                 return self.login_success()
         except Exception as e:
             self.logger.error(f"密碼登入錯誤: {e!s}")
@@ -77,35 +78,40 @@ class GamerLogin:
         """檢查是否成功登入, 被重定向代表登入失敗, 回傳 False"""
         url = "https://home.gamer.com.tw/setting/"
         self.logger.debug("檢查登入狀態")
-        response = self.session.get(url, headers=self.headers)
+        response = self.session.get(url)
         login_status = response.redirect_count == 0
         self.logger.debug(f"登入狀態檢查結果: {'成功' if login_status else '失敗'}")
         return login_status
 
-    def new_session(self, extra_headers: dict[str, str] = {}) -> requests.Session:
-        self.headers = {"User-Agent": self.config.user_agent, **extra_headers}
+    def new_session(self, headers: dict[str, str] = {}) -> requests.Session:
+        default_headers = {
+            "user-agent": self.config.user_agent,
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "accept-language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        self.headers = headers or default_headers
         return requests.Session(headers=self.headers, impersonate=self.config.browser)
 
-    def __login_password_phase1(self) -> str | None:
+    def __login_password_phase1(self, fake_cookie: dict[str, str]) -> str | None:
         """登入前置步驟"""
         url = "https://user.gamer.com.tw/login.php"
-        response = self.session.get(url, cookies=self.__LOGIN_COOKIES)
+        response = self.session.get(url)
         response.raise_for_status()
 
         pattern = r'<input type="hidden" name="alternativeCaptcha" value="(\w+)"'
         match = re.search(pattern, response.text)
         return match.group(1) if match else None
 
-    def __login_password_phase2(self, alternative_captcha: str) -> None:
+    def __login_password_phase2(self, captcha: str, fake_cookie: dict[str, str]) -> None:
         """執行登入"""
         url = "https://user.gamer.com.tw/ajax/do_login.php"
         login_data = {
             "userid": self.config.account,
             "password": self.config.password,
-            "alternativeCaptcha": alternative_captcha,
+            "alternativeCaptcha": captcha,
         }
 
-        response = self.session.post(url, data=login_data, cookies=self.__LOGIN_COOKIES)
+        response = self.session.post(url, data=login_data)
         response.raise_for_status()
         self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken")
 
@@ -130,7 +136,7 @@ class GamerAPI(GamerLogin):
             self._update_global_csrf()
         data = {"uid": uid, "category": category}
 
-        response = self.session.post(self.friend_add_url, headers=self.headers, data=data)
+        response = self.session.post(self.friend_add_url, data=data)
         response.raise_for_status()
         result = str(response.json().get("data"))
         self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
@@ -208,7 +214,7 @@ class GamerAPI(GamerLogin):
         url = f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t={type_id}"
 
         try:
-            response = self.session.get(url, headers=self.headers)
+            response = self.session.get(url)
             response.raise_for_status()
             tree = html.fromstring(response.text)
             user_ids = tree.xpath("//div[@class='user_id']/@data-origin")
@@ -249,7 +255,7 @@ class GamerAPI(GamerLogin):
                 return None
 
         try:
-            response = self.session.get(url, headers=self.headers)
+            response = self.session.get(url)
             response.raise_for_status()
             data = decode_response_dict(response.json())
 
@@ -269,16 +275,17 @@ class GamerAPI(GamerLogin):
     def _update_global_csrf(self) -> None:
         self.logger.debug("開始更新全域 CSRF Token")
         url = "https://www.gamer.com.tw/ajax/get_csrf_token.php"
-        response = self.session.get(url, headers=self.headers)
+        response = self.session.get(url)
         response.raise_for_status()
 
         self.csrf_token = self.session.cookies.get("ckBahamutCsrfToken") or response.text[:16]
-        self.session.cookies.update({"ckBahamutCsrfToken": self.csrf_token})
         if not self.csrf_token:
             error_msg = "無法取得 CSRF Token，請更新登入資料或改為 Cookies 登入"
             self.logger.error(error_msg)
             raise Exception(error_msg)
 
+        self.session.headers.update({"x-bahamut-csrf-token": self.csrf_token})
+        self.session.cookies.update({"ckBahamutCsrfToken": self.csrf_token})
         self.headers["x-bahamut-csrf-token"] = self.csrf_token
         self.logger.debug("CSRF Token 更新成功")
 
@@ -292,15 +299,15 @@ class GamerAPI(GamerLogin):
         headers = self.headers.copy()
         headers.pop("accept", None)
         headers.pop("origin", None)
-        headers_with_referer = {
-            **self.headers,
+        headers = {
+            **headers,
             "accept": "*/*",
             "referer": f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t=5",
             "content-type": "text/html; charset=UTF-8",
             "x-requested-with": "XMLHttpRequest",
         }
 
-        csrf_response = self.session.get(url, headers=headers_with_referer)
+        csrf_response = self.session.get(url, headers=headers)
         csrf_response.raise_for_status()
         csrf_token = csrf_response.text.strip()
 
@@ -323,7 +330,7 @@ class GamerAPIExtended(GamerAPI):
         csrf_token = self._get_temp_csrf()
         data = {"fid": uid, "token": csrf_token}
 
-        response = self.session.post(url, headers=self.headers, data=data)
+        response = self.session.post(url, data=data)
         response.raise_for_status()
         return response.text
 

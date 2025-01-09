@@ -126,13 +126,19 @@ class GamerAPI(GamerLogin):
     def __init__(self, config: Config) -> None:
         super().__init__(config)
 
-    def add_user(self, uid: str, category: str = "bad") -> str:
+    def add_user(
+        self,
+        uid: str,
+        category: str = "bad",
+        category_mapping: dict[str, str] = {"bad": "加入黑名單"},
+    ) -> str:
         """
         Args:
             uid: 將要處理的用戶ID
             category: 發送給api的分類，預設加入黑名單 (bad)
         """
-        self.logger.debug(f"開始處理用戶 {uid}: {category} 操作")
+        self.logger.debug(f"正在將 {uid} {category_mapping[category]}")
+        add_success_msg = "成功"
 
         if not self.csrf_token:
             self._update_global_csrf()
@@ -140,8 +146,11 @@ class GamerAPI(GamerLogin):
 
         response = self.session.post(self.friend_add_url, data=data)
         response.raise_for_status()
-        result = str(response.json().get("data"))
-        self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
+        result = str(response.json().get("data"))  # {"data": {"ok": "加入黑名單成功"}}
+        if add_success_msg in result:
+            self.logger.debug(f"用戶 {uid} {category_mapping[category]} 操作成功: {result}")
+        else:
+            self.logger.info(f"用戶 {uid} {category_mapping[category]} 操作失敗: {result}")
         return result
 
     def add_users(
@@ -328,13 +337,20 @@ class GamerAPIExtended(GamerAPI):
     def remove_user(self, uid: str) -> str:
         """see https://home.gamer.com.tw/friendList.php"""
         url = "https://home.gamer.com.tw/ajax/friend_del.php"
+        remove_success_msg = "D-ONE"
         self.logger.debug(f"開始移除用戶 {uid}")
         csrf_token = self._get_temp_csrf()
         data = {"fid": uid, "token": csrf_token}
 
         response = self.session.post(url, data=data)
         response.raise_for_status()
-        return response.text
+        result = response.text
+
+        if remove_success_msg in result:
+            self.logger.debug(f"用戶 {uid} 移除成功: {result}")
+        else:
+            self.logger.info(f"用戶 {uid} 移除失敗: {result}")
+        return result
 
     def remove_users(self, uids: list[str]) -> dict[str, str]:
         results: dict[str, str] = {}

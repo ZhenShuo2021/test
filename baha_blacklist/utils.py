@@ -89,6 +89,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("-p", "--password", dest="password", type=str, help="帳戶密碼")
     parser.add_argument("-c", "--cookie-path", dest="cookie_path", type=str, help="cookie檔案路徑")
     parser.add_argument(
+        "--cookies-first",
+        action="store_true",
+        dest="cookies_first",
+        help="先使用cookies登入，失敗才改用密碼登入",
+    )
+    parser.add_argument(
         "-s",
         "--source-path",
         dest="blacklist_src",

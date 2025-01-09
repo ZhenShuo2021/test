@@ -40,6 +40,8 @@ class GamerLogin:
         self.session = self.new_session()
         self.csrf_token = None
         self.login_methods = [self.login_password, self.login_cookies]
+        if config.cookies_first:
+            self.login_methods.reverse()
 
     def login(self) -> bool:
         self.logger.debug("開始登入...")
@@ -211,7 +213,7 @@ class GamerAPI(GamerLogin):
         page_mapping: dict[int, str] = {1: "好友", 2: "待確認", 3: "追蹤", 4: "追蹤者", 5: "黑名單"}
         acc, list_name = self.config.account, page_mapping[type_id]
         self.logger.info(f"開始讀取用戶 {acc} 的{list_name}清單")
-        url = f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t={type_id}"
+        url = f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t={type_id} "
 
         try:
             response = self.session.get(url)

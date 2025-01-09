@@ -15,6 +15,7 @@ class Config:
     account: str = "your account here"
     password: str = ""
     cookie_path: str = "./cookies.txt"
+    cookies_first: bool = False
     blacklist_dest: str = "./blacklist.txt"
     blacklist_src: str = (
         "https://github.com/ZhenShuo2021/baha-blacklist/raw/refs/heads/main/blacklist.txt"

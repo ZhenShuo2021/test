@@ -7,14 +7,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import urljoin
 
 from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 from lxml import html
 
 from .config import Config
-from .utils import decode_response_dict, get_default_user_info, to_unicode
+from .utils import count_success, decode_response_dict, get_default_user_info
 
 logger = logging.getLogger("baha_blacklist")
 logger_time_fmt = "%Y-%m-%d"
@@ -57,9 +56,7 @@ class GamerLogin:
     def login_cookies(self) -> bool:
         cookie_jar = cookiejar.MozillaCookieJar(self.config.cookie_path)
         cookie_jar.load()
-        self.session.cookies.update({
-            cookie.name: cookie.value for cookie in cookie_jar if cookie.value
-        })
+        self.session.cookies.update({c.name: c.value for c in cookie_jar if c.value})
         return self.login_success()
 
     def login_password(self) -> bool:
@@ -90,16 +87,14 @@ class GamerLogin:
         return requests.Session(headers=self.headers, impersonate=self.config.browser)
 
     def __login_password_phase1(self) -> str | None:
-        """登入前置步驟，回傳 None 代表失敗"""
+        """登入前置步驟"""
         url = "https://user.gamer.com.tw/login.php"
-        login_status = None
         response = self.session.get(url, cookies=self.__LOGIN_COOKIES)
-        if response.status_code != 200:
-            return login_status
+        response.raise_for_status()
 
         pattern = r'<input type="hidden" name="alternativeCaptcha" value="(\w+)"'
         match = re.search(pattern, response.text)
-        return match.group(1) if match else login_status
+        return match.group(1) if match else None
 
     def __login_password_phase2(self, alternative_captcha: str) -> None:
         """執行登入"""
@@ -118,15 +113,16 @@ class GamerLogin:
 class GamerAPI(GamerLogin):
     """基本API類別, 用於添加用戶(添加黑名單、好友等)以及匯出用戶列表"""
 
+    friend_add_url = "https://api.gamer.com.tw/user/v1/friend_add.php"  # 新版api
+
     def __init__(self, config: Config) -> None:
         super().__init__(config)
-        self.api_url = "https://api.gamer.com.tw/user/v1/friend_add.php"
 
     def add_user(self, uid: str, category: str = "bad") -> str:
         """
         Args:
-            uid: The user ID
-            category: the operation to gamer.com API. Defaults to bad (add to black list)
+            uid: 將要處理的用戶ID
+            category: 發送給api的分類，預設加入黑名單 (bad)
         """
         self.logger.debug(f"開始處理用戶 {uid}: {category} 操作")
 
@@ -134,66 +130,68 @@ class GamerAPI(GamerLogin):
             self._update_global_csrf()
         data = {"uid": uid, "category": category}
 
-        try:
-            response = self.session.post(self.api_url, headers=self.headers, data=data)
-            response.raise_for_status()
-            result = str(response.json().get("data"))
-            self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
-        except RequestException as e:
-            result = f"狀態碼錯誤: {e}"
-            self.logger.error(f"用戶 {uid} {category} 操作網路請求失敗: {result}")
-
+        response = self.session.post(self.friend_add_url, headers=self.headers, data=data)
+        response.raise_for_status()
+        result = str(response.json().get("data"))
+        self.logger.debug(f"用戶 {uid} {category} 操作成功: {result}")
         return result
 
     def add_users(
         self,
         uids: list[str],
-        existing_users: list[str],
+        skipped_users: list[str],
         category: str = "bad",
-    ) -> dict[str, Any]:
+        category_mapping: dict[str, str] = {"bad": "加入黑名單"},
+    ) -> dict[str, str]:
         """
         從列表新增用戶, 跳過已經在用戶列表(黑名單)中的用戶
 
         Args:
             uids: 用戶ID列表
-            existing_users: 目前的既有用戶清單，清單內的用戶會被跳過避免重複發送請求
+            skipped_users: 清單內的用戶會被跳過避免重複發送請求，預設為既有用戶清單
             category: 操作類型, 預設為 "bad" (加入黑名單)
+            category_mapping: 將操作類型映射到 logger 輸出的字典
 
         Returns:
-            Dict[str, Any]: 每個用戶ID對應的操作結果
+            Dict[str, str]: 每個用戶ID對應的操作結果
         """
-        logger_mapping: dict[str, str] = {"bad": "加入黑名單"}
-        results: dict[str, str] = {}
-        consecutive_errors = 0
-        total_users = len(uids)
-        processed_count = 0
 
-        self.logger.info(f"開始進行用戶 {logger_mapping[category]} 操作，共 {total_users} 個用戶")
-
-        for uid in uids:
-            processed_count += 1
-            if uid in existing_users:
-                self.logger.debug(f"用戶 {uid} 已存在清單中 ({processed_count}/{total_users})")
+        def should_skip(results: dict[str, str]) -> bool:
+            if uid in skipped_users:
+                self.logger.debug(f"用戶 {uid} 已存在清單中 ({index}/{total_users})")
                 results[uid] = "已存在清單中"
-                continue
+                return True
 
             if consecutive_errors >= 3:
                 error_msg = "連續操作失敗三次，系統中止"
-                self.logger.error(f"{error_msg} ({processed_count}/{total_users})")
+                self.logger.error(f"{error_msg} ({index}/{total_users})")
                 raise Exception(error_msg)
+            return False
+
+        results: dict[str, str] = {}
+        consecutive_errors = 0
+        total_users = len(uids)
+
+        self.logger.info(f"開始進行用戶 {category_mapping[category]} 操作，共 {total_users} 個用戶")
+
+        for index, uid in enumerate(uids, 1):
+            if should_skip(results):
+                continue
 
             try:
                 result = self.add_user(uid, category)
                 results[uid] = result
-                self.logger.info(f"處理進度: {processed_count}/{total_users}")
+                self.logger.info(f"處理進度: {index}/{total_users}")
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                self.logger.error(f"用戶 {uid} 處理失敗: {e} ({processed_count}/{total_users})")
+                msg = f"用戶 {uid} 處理失敗: {e} ({index}/{total_users})"
+                results[uid] = msg
+                self.logger.error(msg)
 
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        self.logger.info(f"處理完成，成功處理: {processed_count}/{total_users}")
+        self.logger.info(f"用戶新增完成，成功: {count_success(results)}/{total_users}")
         return results
 
     def export_users(self, type_id: int = 5) -> list[str]:
@@ -205,7 +203,8 @@ class GamerAPI(GamerLogin):
             list[str]: 黑名單用戶ID列表
         """
         page_mapping: dict[int, str] = {1: "好友", 2: "待確認", 3: "追蹤", 4: "追蹤者", 5: "黑名單"}
-        self.logger.info(f"開始讀取用戶 {self.config.account} 的{page_mapping[type_id]}清單")
+        acc, list_name = self.config.account, page_mapping[type_id]
+        self.logger.info(f"開始讀取用戶 {acc} 的{list_name}清單")
         url = f"https://home.gamer.com.tw/friendList.php?user={self.config.account}&t={type_id}"
 
         try:
@@ -213,16 +212,14 @@ class GamerAPI(GamerLogin):
             response.raise_for_status()
             tree = html.fromstring(response.text)
             user_ids = tree.xpath("//div[@class='user_id']/@data-origin")
-
             if not user_ids:
-                self.logger.info(f"用戶 {self.config.account} 的清單目前無資料")
+                self.logger.info(f"用戶 {acc} 的{list_name}清單沒有資料")
                 return []
 
             self.logger.info(f"成功讀取清單，共 {len(user_ids)} 筆資料")
             return user_ids
-
         except Exception as e:
-            self.logger.error(f"用戶 {self.config.account} 的清單讀取失敗: {e}")
+            self.logger.error(f"用戶 {acc} {list_name}清單讀取失敗: {e}")
             return []
 
     def get_user_info(self, uid: str) -> UserInfo:
@@ -282,7 +279,7 @@ class GamerAPI(GamerLogin):
             self.logger.error(error_msg)
             raise Exception(error_msg)
 
-        self.headers["x-bahamut-csrf-token"] = self.csrf_token  # type: ignore
+        self.headers["x-bahamut-csrf-token"] = self.csrf_token
         self.logger.debug("CSRF Token 更新成功")
 
     def _get_temp_csrf(self) -> str:
@@ -318,60 +315,41 @@ class GamerAPIExtended(GamerAPI):
 
     def __init__(self, config: Config) -> None:
         super().__init__(config)
-        self.user_info_time = to_unicode("上站次數")
-        self.user_info_login = to_unicode("上站日期")
 
     def remove_user(self, uid: str) -> str:
-        """發送 POST 請求刪除用戶 (移除黑名單)"""
+        """see https://home.gamer.com.tw/friendList.php"""
+        url = "https://home.gamer.com.tw/ajax/friend_del.php"
         self.logger.debug(f"開始移除用戶 {uid}")
+        csrf_token = self._get_temp_csrf()
+        data = {"fid": uid, "token": csrf_token}
 
-        try:
-            csrf_token = self._get_temp_csrf()
-            delete_url = f"{self.BASE_URL}ajax/friend_del.php"
-            data = {
-                "fid": uid,
-                "token": csrf_token,
-            }  # fid: see https://home.gamer.com.tw/friendList.php?user=[用戶名稱]&t=5
+        response = self.session.post(url, headers=self.headers, data=data)
+        response.raise_for_status()
+        return response.text
 
-            response = self.session.post(delete_url, headers=self.headers, data=data)
-            response.raise_for_status()
-            message = response.text
-            self.logger.debug(f"用戶 {uid} 移除成功")
-
-        except RequestException as e:
-            message = f"用戶移除失敗: {e}"
-            self.logger.error(f"移除用戶 {uid} 時網路請求失敗: {e!s}")
-
-        return message
-
-    def remove_users(self, uids: list[str]) -> dict[str, Any]:
-        results = {}
-        total_users = len(uids)
-        processed_count = 0
+    def remove_users(self, uids: list[str]) -> dict[str, str]:
+        results: dict[str, str] = {}
         consecutive_errors = 0
-
+        total_users = len(uids)
         self.logger.info(f"開始移除用戶，共 {total_users} 個用戶")
 
-        for uid in uids:
-            processed_count += 1
+        for index, uid in enumerate(uids, 1):
             try:
-                result = self.remove_user(uid)
-                results[uid] = result
-                self.logger.info(f"移除進度: {processed_count}/{total_users}")
+                results[uid] = self.remove_user(uid)
+                self.logger.info(f"移除進度: {index}/{total_users}")
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                error_msg = f"用戶移除失敗: {e}"
+                error_msg = f"移除失敗: {e}"
                 results[uid] = error_msg
-                self.logger.error(f"用戶 {uid} {error_msg} ({processed_count}/{total_users})")
+                self.logger.error(f"用戶 {uid} {error_msg} ({index}/{total_users})")
 
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        success_count = sum(1 for r in results.values() if "失敗" not in r)
-        self.logger.info(f"用戶移除完成，成功: {success_count}/{total_users}")
+        self.logger.info(f"用戶移除完成，成功: {count_success(results)}/{total_users}")
         return results
 
-    def smart_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> None:
+    def smart_remove_user(self, uid: str, min_visits: int = 50, min_days: int = 60) -> str:
         """檢查並移除不符合條件的用戶
 
         Args:
@@ -379,52 +357,50 @@ class GamerAPIExtended(GamerAPI):
             min_visits: 最小上站次數
             min_days: 最近登入天數最小容許值
         """
-        self.logger.debug(f"開始用戶 {uid} 移除任務")
+        self.logger.debug(f"開始移除用戶 {uid}")
+        user_info = self.get_user_info(uid)
+        self.logger.debug(f"用戶資訊: {user_info}")
+        last_login = (datetime.now() - user_info.last_login).days
 
-        try:
-            user_info = self.get_user_info(uid)
-            self.logger.debug(f"用戶資訊: {user_info}")
+        reasons = []
+        if user_info.visit_count < min_visits:
+            reasons.append(f"上站次數({user_info.visit_count})低於{min_visits}")
+        if last_login > min_days:
+            reasons.append(f"上站日期距離現在天數({last_login})大於{min_days}")
 
-            last_login = (datetime.now() - user_info.last_login).days
-
-            reasons = []
-            if user_info.visit_count < min_visits:
-                reasons.append(f"上站次數({user_info.visit_count})低於{min_visits}")
-            if last_login > min_days:
-                reasons.append(f"上站日期距離現在天數({last_login})大於{min_days}")
-
-            if reasons:
-                msg = self.remove_user(uid)
-                self.logger.debug(f"用戶 {uid} 已移除: {', '.join(reasons)}, 處理結果: {msg}")
-            else:
-                msg = f"用戶 {uid} 已保留 (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})"
-                self.logger.debug(msg)
-
-        except RequestException as e:
-            self.logger.error(f"移除用戶 {uid} 時網路請求失敗: {e!s}")
+        if reasons:
+            msg = self.remove_user(uid)
+            self.logger.debug(f"用戶 {uid} 已移除: {', '.join(reasons)}, 處理結果: {msg}")
+        else:
+            msg = f"用戶 {uid} 已保留 (上站次數: {user_info.visit_count}, 上站日期距離現在天數: {last_login})"
+            self.logger.debug(msg)
+        return msg
 
     def smart_remove_users(
         self,
         uids: list[str],
         min_visits: int = 50,
         min_days: int = 60,
-    ) -> None:
+    ) -> dict[str, str]:
+        results: dict[str, str] = {}
+        consecutive_errors = 0
         total_users = len(uids)
         self.logger.info(
             f"開始移除用戶，共 {total_users} 個用戶，移除門檻為：「最小上站次數: {min_visits}, 最小天數: {min_days}」"
         )
-        consecutive_errors = 0
 
         for index, uid in enumerate(uids, 1):
             try:
-                self.smart_remove_user(uid)
+                results[uid] = self.smart_remove_user(uid)
                 self.logger.info(f"移除進度: {index}/{total_users}")
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                error_msg = f"用戶移除失敗: {e}"
+                error_msg = f"移除失敗: {e}"
+                results[uid] = error_msg
                 self.logger.error(f"用戶 {uid} {error_msg} ({index}/{total_users})")
 
             time.sleep(random.uniform(self.config.min_sleep, self.config.max_sleep))
 
-        self.logger.info(f"用戶移除完成，共處理 {total_users} 個用戶")
+        self.logger.info(f"用戶移除完成，成功: {count_success(results)}/{total_users}")
+        return results

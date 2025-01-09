@@ -53,6 +53,10 @@ def decode_response_dict(response: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(response, ensure_ascii=False))
 
 
+def count_success(results: dict[Any, Any], keywords: list[str] = ["失敗"]) -> int:
+    return sum(1 for r in results.values() if not any(keyword in r for keyword in keywords))
+
+
 class CustomHelpFormatter(argparse.RawTextHelpFormatter):
     def __init__(self, prog: Any) -> None:
         super().__init__(prog, max_help_position=36)
